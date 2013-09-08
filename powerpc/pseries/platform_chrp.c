@@ -80,7 +80,7 @@ static struct cpu_group *chrp_smp_topo(platform_t plat);
 static void chrp_reset(platform_t);
 #ifdef __powerpc64__
 #include "phyp-hvcall.h"
-static void phyp_cpu_idle(void);
+static void phyp_cpu_idle(sbintime_t sbt);
 #endif
 
 static platform_method_t chrp_methods[] = {
@@ -384,7 +384,7 @@ chrp_reset(platform_t platform)
 
 #ifdef __powerpc64__
 static void
-phyp_cpu_idle(void)
+phyp_cpu_idle(sbintime_t sbt)
 {
 	#ifdef NOTYET /* Causes hangs on QEMU */
 	phyp_hcall(H_CEDE);
