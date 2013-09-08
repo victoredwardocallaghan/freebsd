@@ -103,6 +103,11 @@ void	sched_user_prio(struct thread *td, u_char prio);
 void	sched_userret(struct thread *td);
 void	sched_wakeup(struct thread *td);
 void	sched_preempt(struct thread *td);
+#ifdef	RACCT
+#ifdef	SCHED_4BSD
+fixpt_t	sched_pctcpu_delta(struct thread *td);
+#endif
+#endif
 
 /*
  * Threads are moved on and off of run queues
@@ -146,11 +151,13 @@ static __inline void
 sched_pin(void)
 {
 	curthread->td_pinned++;
+	__compiler_membar();
 }
 
 static __inline void
 sched_unpin(void)
 {
+	__compiler_membar();
 	curthread->td_pinned--;
 }
 
@@ -175,7 +182,7 @@ static void name ## _add_proc(void *dummy __unused)			\
 	    #name, CTLTYPE_LONG|CTLFLAG_RD|CTLFLAG_MPSAFE,		\
 	    ptr, 0, sysctl_dpcpu_long, "LU", descr);			\
 }									\
-SYSINIT(name, SI_SUB_RUN_SCHEDULER, SI_ORDER_MIDDLE, name ## _add_proc, NULL);
+SYSINIT(name, SI_SUB_LAST, SI_ORDER_MIDDLE, name ## _add_proc, NULL);
 
 #define	SCHED_STAT_DEFINE(name, descr)					\
     DPCPU_DEFINE(unsigned long, name);					\

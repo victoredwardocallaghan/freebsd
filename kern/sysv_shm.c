@@ -79,6 +79,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/mutex.h>
 #include <sys/racct.h>
 #include <sys/resourcevar.h>
+#include <sys/rwlock.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/syscallsubr.h>
@@ -413,7 +414,7 @@ kern_shmat(td, shmid, shmaddr, shmflg)
 	vm_object_reference(shmseg->object);
 	rv = vm_map_find(&p->p_vmspace->vm_map, shmseg->object,
 	    0, &attach_va, size, (flags & MAP_FIXED) ? VMFS_NO_SPACE :
-	    VMFS_ANY_SPACE, prot, prot, MAP_INHERIT_SHARE);
+	    VMFS_OPTIMAL_SPACE, prot, prot, MAP_INHERIT_SHARE);
 	if (rv != KERN_SUCCESS) {
 		vm_object_deallocate(shmseg->object);
 		error = ENOMEM;
@@ -707,10 +708,10 @@ shmget_allocate_segment(td, uap, mode)
 #endif
 		return (ENOMEM);
 	}
-	VM_OBJECT_LOCK(shm_object);
+	VM_OBJECT_WLOCK(shm_object);
 	vm_object_clear_flag(shm_object, OBJ_ONEMAPPING);
 	vm_object_set_flag(shm_object, OBJ_NOSPLIT);
-	VM_OBJECT_UNLOCK(shm_object);
+	VM_OBJECT_WUNLOCK(shm_object);
 
 	shmseg->object = shm_object;
 	shmseg->u.shm_perm.cuid = shmseg->u.shm_perm.uid = cred->cr_uid;

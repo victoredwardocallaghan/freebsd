@@ -73,6 +73,7 @@ __FBSDID("$FreeBSD$");
 #include "opt_inet6.h"
 #include "opt_ipfw.h"
 #include "opt_ipsec.h"
+#include "opt_kdtrace.h"
 
 #include <sys/param.h>
 #include <sys/jail.h>
@@ -82,6 +83,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/priv.h>
 #include <sys/proc.h>
 #include <sys/protosw.h>
+#include <sys/sdt.h>
 #include <sys/signalvar.h>
 #include <sys/socket.h>
 #include <sys/socketvar.h>
@@ -95,6 +97,7 @@ __FBSDID("$FreeBSD$");
 #include <net/route.h>
 
 #include <netinet/in.h>
+#include <netinet/in_kdtrace.h>
 #include <netinet/in_pcb.h>
 #include <netinet/in_systm.h>
 #include <netinet/in_var.h>
@@ -141,7 +144,7 @@ udp6_append(struct inpcb *inp, struct mbuf *n, int off,
 	/* Check AH/ESP integrity. */
 	if (ipsec6_in_reject(n, inp)) {
 		m_freem(n);
-		V_ipsec6stat.in_polvio++;
+		IPSEC6STAT_INC(ips_in_polvio);
 		return;
 	}
 #endif /* IPSEC */
@@ -182,9 +185,7 @@ udp6_input(struct mbuf **mp, int *offp, int proto)
 	int off = *offp;
 	int plen, ulen;
 	struct sockaddr_in6 fromsa;
-#ifdef IPFIREWALL_FORWARD
 	struct m_tag *fwd_tag;
-#endif
 	uint16_t uh_sum;
 
 	ifp = m->m_pkthdr.rcvif;
@@ -379,6 +380,7 @@ udp6_input(struct mbuf **mp, int *offp, int proto)
 		INP_RLOCK(last);
 		INP_INFO_RUNLOCK(&V_udbinfo);
 		up = intoudpcb(last);
+		UDP_PROBE(receive, NULL, last, ip6, last, uh);
 		if (up->u_tun_func == NULL) {
 			udp6_append(last, m, off, &fromsa);
 		} else {
@@ -393,12 +395,12 @@ udp6_input(struct mbuf **mp, int *offp, int proto)
 	/*
 	 * Locate pcb for datagram.
 	 */
-#ifdef IPFIREWALL_FORWARD
+
 	/*
 	 * Grab info from PACKET_TAG_IPFORWARD tag prepended to the chain.
 	 */
-	fwd_tag = m_tag_find(m, PACKET_TAG_IPFORWARD, NULL);
-	if (fwd_tag != NULL) {
+	if ((m->m_flags & M_IP6_NEXTHOP) &&
+	    (fwd_tag = m_tag_find(m, PACKET_TAG_IPFORWARD, NULL)) != NULL) {
 		struct sockaddr_in6 *next_hop6;
 
 		next_hop6 = (struct sockaddr_in6 *)(fwd_tag + 1);
@@ -424,8 +426,8 @@ udp6_input(struct mbuf **mp, int *offp, int proto)
 		}
 		/* Remove the tag from the packet. We don't need it anymore. */
 		m_tag_delete(m, fwd_tag);
+		m->m_flags &= ~M_IP6_NEXTHOP;
 	} else
-#endif /* IPFIREWALL_FORWARD */
 		inp = in6_pcblookup_mbuf(&V_udbinfo, &ip6->ip6_src,
 		    uh->uh_sport, &ip6->ip6_dst, uh->uh_dport,
 		    INPLOOKUP_WILDCARD | INPLOOKUP_RLOCKPCB,
@@ -457,6 +459,7 @@ udp6_input(struct mbuf **mp, int *offp, int proto)
 	}
 	INP_RLOCK_ASSERT(inp);
 	up = intoudpcb(inp);
+	UDP_PROBE(receive, NULL, inp, ip6, inp, uh);
 	if (up->u_tun_func == NULL) {
 		udp6_append(inp, m, off, &fromsa);
 	} else {
@@ -644,8 +647,6 @@ udp6_output(struct inpcb *inp, struct mbuf *m, struct sockaddr *addr6,
 		faddr = &sin6->sin6_addr;
 
 		/*
-		 * IPv4 version of udp_output calls in_pcbconnect in this case,
-		 * which needs splnet and affects performance.
 		 * Since we saw no essential reason for calling in_pcbconnect,
 		 * we get rid of such kind of logic, and call in6_selectsrc
 		 * and in6_pcbsetport in order to fill in the local address
@@ -751,7 +752,7 @@ udp6_output(struct inpcb *inp, struct mbuf *m, struct sockaddr *addr6,
 	 * Calculate data length and get a mbuf
 	 * for UDP and IP6 headers.
 	 */
-	M_PREPEND(m, hlen + sizeof(struct udphdr), M_DONTWAIT);
+	M_PREPEND(m, hlen + sizeof(struct udphdr), M_NOWAIT);
 	if (m == 0) {
 		error = ENOBUFS;
 		goto release;
@@ -775,9 +776,7 @@ udp6_output(struct inpcb *inp, struct mbuf *m, struct sockaddr *addr6,
 		ip6->ip6_flow	= inp->inp_flow & IPV6_FLOWINFO_MASK;
 		ip6->ip6_vfc	&= ~IPV6_VERSION_MASK;
 		ip6->ip6_vfc	|= IPV6_VERSION;
-#if 0				/* ip6_plen will be filled in ip6_output. */
 		ip6->ip6_plen	= htons((u_short)plen);
-#endif
 		ip6->ip6_nxt	= IPPROTO_UDP;
 		ip6->ip6_hlim	= in6_selecthlim(inp, NULL);
 		ip6->ip6_src	= *laddr;
@@ -789,6 +788,7 @@ udp6_output(struct inpcb *inp, struct mbuf *m, struct sockaddr *addr6,
 
 		flags = 0;
 
+		UDP_PROBE(send, NULL, inp, ip6, inp, udp6);
 		UDPSTAT_INC(udps_opackets);
 		error = ip6_output(m, optp, NULL, flags, inp->in6p_moptions,
 		    NULL, inp);

@@ -373,7 +373,7 @@ patm_start(struct ifnet *ifp)
 		}
 
 		/* save data */
-		m->m_pkthdr.header = vcc;
+		m->m_pkthdr.PH_loc.ptr = vcc;
 
 		/* try to put it on the channels queue */
 		if (_IF_QFULL(&vcc->scd->q)) {
@@ -438,7 +438,7 @@ patm_tx_pad(struct patm_softc *sc, struct mbuf *m0)
 			return (m0);
 		}
 	}
-	MGET(m, M_DONTWAIT, MT_DATA);
+	MGET(m, M_NOWAIT, MT_DATA);
 	if (m == 0) {
 		m_freem(m0);
 		sc->ifp->if_oerrors++;
@@ -473,7 +473,7 @@ patm_launch(struct patm_softc *sc, struct patm_scd *scd)
 		if (m == NULL)
 			break;
 
-		a.vcc = m->m_pkthdr.header;
+		a.vcc = m->m_pkthdr.PH_loc.ptr;
 
 		/* we must know the number of segments beforehand - count
 		 * this may actually give a wrong number of segments for
@@ -499,7 +499,7 @@ patm_launch(struct patm_softc *sc, struct patm_scd *scd)
 		}
 
 		/* load the map */
-		m->m_pkthdr.header = map;
+		m->m_pkthdr.PH_loc.ptr = map;
 		a.mbuf = m;
 
 		/* handle AAL_RAW */
@@ -532,7 +532,7 @@ patm_launch(struct patm_softc *sc, struct patm_scd *scd)
 		error = bus_dmamap_load_mbuf(sc->tx_tag, map->map, m,
 		    patm_load_txbuf, &a, BUS_DMA_NOWAIT);
 		if (error == EFBIG) {
-			if ((m = m_defrag(m, M_DONTWAIT)) == NULL) {
+			if ((m = m_defrag(m, M_NOWAIT)) == NULL) {
 				sc->ifp->if_oerrors++;
 				continue;
 			}
@@ -690,7 +690,7 @@ patm_tx(struct patm_softc *sc, u_int stamp, u_int status)
 		scd->on_card[last] = NULL;
 		patm_debug(sc, TX, "ok tag=%x", last);
 
-		map = m->m_pkthdr.header;
+		map = m->m_pkthdr.PH_loc.ptr;
 		scd->space += m->m_pkthdr.csum_data;
 
 		bus_dmamap_sync(sc->tx_tag, map->map,

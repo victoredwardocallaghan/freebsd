@@ -330,10 +330,10 @@ check_slice(void)
 
     if (dsk.type == TYPE_FD)
 	return (WHOLE_DISK_SLICE);
-    if (drvread(sec, DOSBBSECTOR + 1))
+    if (drvread(sec, PC98_BBSECTOR))
 	return (WHOLE_DISK_SLICE);	/* Read error */
-    dp = (void *)(sec + DOSPARTOFF);
-    for (i = 0; i < NDOSPART; i++) {
+    dp = (void *)(sec + PC98_PARTOFF);
+    for (i = 0; i < PC98_NPARTS; i++) {
 	if (dp[i].dp_mid == DOSMID_386BSD) {
 	    if (dp[i].dp_scyl <= cyl && cyl <= dp[i].dp_ecyl)
 		return (BASE_SLICE + i);
@@ -554,8 +554,10 @@ parse()
 	    }
 	    ioctrl = OPT_CHECK(RBX_DUAL) ? (IO_SERIAL|IO_KEYBOARD) :
 		     OPT_CHECK(RBX_SERIAL) ? IO_SERIAL : IO_KEYBOARD;
-	    if (ioctrl & IO_SERIAL)
-	        sio_init(115200 / comspeed);
+	    if (ioctrl & IO_SERIAL) {
+	        if (sio_init(115200 / comspeed) != 0)
+		    ioctrl &= ~IO_SERIAL;
+	    }
 	} else {
 	    for (q = arg--; *q && *q != '('; q++);
 	    if (*q) {
@@ -581,7 +583,7 @@ parse()
 		dsk.slice = WHOLE_DISK_SLICE;
 		if (arg[1] == ',') {
 		    dsk.slice = *arg - '0' + 1;
-		    if (dsk.slice > NDOSPART + 1)
+		    if (dsk.slice > PC98_NPARTS + 1)
 			return -1;
 		    arg += 2;
 		}
@@ -624,12 +626,12 @@ dskread(void *buf, unsigned lba, unsigned nblk)
 	set_dsk();
 	if (dsk.type == TYPE_FD)
 	    goto unsliced;
-	if (drvread(sec, DOSBBSECTOR + 1))
+	if (drvread(sec, PC98_BBSECTOR))
 	    return -1;
-	dp = (void *)(sec + DOSPARTOFF);
+	dp = (void *)(sec + PC98_PARTOFF);
 	sl = dsk.slice;
 	if (sl < BASE_SLICE) {
-	    for (i = 0; i < NDOSPART; i++)
+	    for (i = 0; i < PC98_NPARTS; i++)
 		if (dp[i].dp_mid == DOSMID_386BSD) {
 		    sl = BASE_SLICE + i;
 		    break;

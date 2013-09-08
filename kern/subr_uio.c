@@ -45,9 +45,9 @@ __FBSDID("$FreeBSD$");
 #include <sys/limits.h>
 #include <sys/lock.h>
 #include <sys/mman.h>
-#include <sys/mutex.h>
 #include <sys/proc.h>
 #include <sys/resourcevar.h>
+#include <sys/rwlock.h>
 #include <sys/sched.h>
 #include <sys/sysctl.h>
 #include <sys/vnode.h>
@@ -56,8 +56,9 @@ __FBSDID("$FreeBSD$");
 #include <vm/vm_param.h>
 #include <vm/vm_extern.h>
 #include <vm/vm_page.h>
+#include <vm/vm_pageout.h>
 #include <vm/vm_map.h>
-#ifdef ZERO_COPY_SOCKETS
+#ifdef SOCKET_SEND_COW
 #include <vm/vm_object.h>
 #endif
 
@@ -66,7 +67,7 @@ SYSCTL_INT(_kern, KERN_IOV_MAX, iov_max, CTLFLAG_RD, NULL, UIO_MAXIOV,
 
 static int uiomove_faultflag(void *cp, int n, struct uio *uio, int nofault);
 
-#ifdef ZERO_COPY_SOCKETS
+#ifdef SOCKET_SEND_COW
 /* Declared in uipc_socket.c */
 extern int so_zero_copy_receive;
 
@@ -104,10 +105,10 @@ vm_pgmoveco(vm_map_t mapa, vm_offset_t kaddr, vm_offset_t uaddr)
 			   &upindex, &prot, &wired)) != KERN_SUCCESS) {
 		return(EFAULT);
 	}
-	VM_OBJECT_LOCK(uobject);
+	VM_OBJECT_WLOCK(uobject);
 retry:
 	if ((user_pg = vm_page_lookup(uobject, upindex)) != NULL) {
-		if (vm_page_sleep_if_busy(user_pg, TRUE, "vm_pgmoveco"))
+		if (vm_page_sleep_if_busy(user_pg, "vm_pgmoveco"))
 			goto retry;
 		vm_page_lock(user_pg);
 		pmap_remove_all(user_pg);
@@ -122,13 +123,18 @@ retry:
 		if (uobject->backing_object != NULL)
 			pmap_remove(map->pmap, uaddr, uaddr + PAGE_SIZE);
 	}
-	vm_page_insert(kern_pg, uobject, upindex);
+	if (vm_page_insert(kern_pg, uobject, upindex)) {
+		VM_OBJECT_WUNLOCK(uobject);
+		VM_WAIT;
+		VM_OBJECT_WLOCK(uobject);
+		goto retry;
+	}
 	vm_page_dirty(kern_pg);
-	VM_OBJECT_UNLOCK(uobject);
+	VM_OBJECT_WUNLOCK(uobject);
 	vm_map_lookup_done(map, entry);
 	return(KERN_SUCCESS);
 }
-#endif /* ZERO_COPY_SOCKETS */
+#endif /* SOCKET_SEND_COW */
 
 int
 copyin_nofault(const void *udaddr, void *kaddr, size_t len)
@@ -151,6 +157,52 @@ copyout_nofault(const void *kaddr, void *udaddr, size_t len)
 	vm_fault_enable_pagefaults(save);
 	return (error);
 }
+
+#define	PHYS_PAGE_COUNT(len)	(howmany(len, PAGE_SIZE) + 1)
+
+int
+physcopyin(void *src, vm_paddr_t dst, size_t len)
+{
+	vm_page_t m[PHYS_PAGE_COUNT(len)];
+	struct iovec iov[1];
+	struct uio uio;
+	int i;
+
+	iov[0].iov_base = src;
+	iov[0].iov_len = len;
+	uio.uio_iov = iov;
+	uio.uio_iovcnt = 1;
+	uio.uio_offset = 0;
+	uio.uio_resid = len;
+	uio.uio_segflg = UIO_SYSSPACE;
+	uio.uio_rw = UIO_WRITE;
+	for (i = 0; i < PHYS_PAGE_COUNT(len); i++, dst += PAGE_SIZE)
+		m[i] = PHYS_TO_VM_PAGE(dst);
+	return (uiomove_fromphys(m, dst & PAGE_MASK, len, &uio));
+}
+
+int
+physcopyout(vm_paddr_t src, void *dst, size_t len)
+{
+	vm_page_t m[PHYS_PAGE_COUNT(len)];
+	struct iovec iov[1];
+	struct uio uio;
+	int i;
+
+	iov[0].iov_base = dst;
+	iov[0].iov_len = len;
+	uio.uio_iov = iov;
+	uio.uio_iovcnt = 1;
+	uio.uio_offset = 0;
+	uio.uio_resid = len;
+	uio.uio_segflg = UIO_SYSSPACE;
+	uio.uio_rw = UIO_READ;
+	for (i = 0; i < PHYS_PAGE_COUNT(len); i++, src += PAGE_SIZE)
+		m[i] = PHYS_TO_VM_PAGE(src);
+	return (uiomove_fromphys(m, src & PAGE_MASK, len, &uio));
+}
+
+#undef PHYS_PAGE_COUNT
 
 int
 uiomove(void *cp, int n, struct uio *uio)
@@ -261,7 +313,7 @@ uiomove_frombuf(void *buf, int buflen, struct uio *uio)
 	return (uiomove((char *)buf + offset, n, uio));
 }
 
-#ifdef ZERO_COPY_SOCKETS
+#ifdef SOCKET_RECV_PFLIP
 /*
  * Experimental support for zero-copy I/O
  */
@@ -356,7 +408,7 @@ uiomoveco(void *cp, int n, struct uio *uio, int disposable)
 	}
 	return (0);
 }
-#endif /* ZERO_COPY_SOCKETS */
+#endif /* SOCKET_RECV_PFLIP */
 
 /*
  * Give next character to user as result of read.
@@ -389,7 +441,6 @@ again:
 	case UIO_SYSSPACE:
 		iov_base = iov->iov_base;
 		*iov_base = c;
-		iov->iov_base = iov_base;
 		break;
 
 	case UIO_NOCOPY:

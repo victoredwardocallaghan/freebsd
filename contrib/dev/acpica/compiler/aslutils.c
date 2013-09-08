@@ -1,4 +1,3 @@
-
 /******************************************************************************
  *
  * Module Name: aslutils -- compiler utilities
@@ -6,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2012, Intel Corp.
+ * Copyright (C) 2000 - 2013, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -52,7 +51,6 @@
 
 #define _COMPONENT          ACPI_COMPILER
         ACPI_MODULE_NAME    ("aslutils")
-
 
 
 /* Local prototypes */
@@ -355,8 +353,6 @@ DbgPrint (
     va_list                 Args;
 
 
-    va_start (Args, Fmt);
-
     if (!Gbl_DebugFlag)
     {
         return;
@@ -368,6 +364,7 @@ DbgPrint (
         return;
     }
 
+    va_start (Args, Fmt);
     (void) vfprintf (stderr, Fmt, Args);
     va_end (Args);
     return;
@@ -569,7 +566,7 @@ UtCheckIntegerRange (
 
     if (!Op)
     {
-        return NULL;
+        return (NULL);
     }
 
     if ((Op->Asl.Value.Integer < LowValue) ||
@@ -828,17 +825,18 @@ UtAttachNameseg (
         /* No dots in the namepath, there is only a single nameseg. */
         /* Handle prefixes */
 
-        while ((*Name == '\\') || (*Name == '^'))
+        while (ACPI_IS_ROOT_PREFIX (*Name) ||
+               ACPI_IS_PARENT_PREFIX (*Name))
         {
             Name++;
         }
 
-        /* Remaing string should be one single nameseg */
+        /* Remaining string should be one single nameseg */
 
         UtPadNameWithUnderscores (Name, PaddedNameSeg);
     }
 
-    strncpy (Op->Asl.NameSeg, PaddedNameSeg, 4);
+    ACPI_MOVE_NAME (Op->Asl.NameSeg, PaddedNameSeg);
 }
 
 
@@ -957,6 +955,7 @@ UtStrtoul64 (
     case 8:
     case 10:
     case 16:
+
         break;
 
     default:
@@ -1091,19 +1090,24 @@ ErrorExit:
     switch (Base)
     {
     case 8:
+
         Status = AE_BAD_OCTAL_CONSTANT;
         break;
 
     case 10:
+
         Status = AE_BAD_DECIMAL_CONSTANT;
         break;
 
     case 16:
+
         Status = AE_BAD_HEX_CONSTANT;
         break;
 
     default:
+
         /* Base validated above */
+
         break;
     }
 

@@ -1,8 +1,7 @@
-/*	$OpenBSD: pf_ioctl.c,v 1.213 2009/02/15 21:46:12 mbalmer Exp $ */
-
-/*
+/*-
  * Copyright (c) 2001 Daniel Hartmeier
  * Copyright (c) 2002,2003 Henning Brauer
+ * Copyright (c) 2012 Gleb Smirnoff <glebius@FreeBSD.org>
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -33,6 +32,7 @@
  * Agency (DARPA) and Air Force Research Laboratory, Air Force
  * Materiel Command, USAF, under agreement number F30602-01-2-0537.
  *
+ *	$OpenBSD: pf_ioctl.c,v 1.213 2009/02/15 21:46:12 mbalmer Exp $
  */
 
 #include <sys/cdefs.h>
@@ -963,8 +963,6 @@ pfioctl(struct cdev *dev, u_long cmd, caddr_t addr, int flags, struct thread *td
 {
 	int			 error = 0;
 
-	CURVNET_SET(TD_TO_VNET(td));
-
 	/* XXX keep in sync with switch() below */
 	if (securelevel_gt(td->td_ucred, 2))
 		switch (cmd) {
@@ -1067,6 +1065,8 @@ pfioctl(struct cdev *dev, u_long cmd, caddr_t addr, int flags, struct thread *td
 		default:
 			return (EACCES);
 		}
+
+	CURVNET_SET(TD_TO_VNET(td));
 
 	switch (cmd) {
 	case DIOCSTART:
@@ -1691,7 +1691,7 @@ relock_DIOCKILLSTATES:
 			PF_RULES_RLOCK();
 			error = pfsync_state_import_ptr(sp, PFSYNC_SI_IOCTL);
 			PF_RULES_RUNLOCK();
-		}
+		} else
 			error = EOPNOTSUPP;
 		break;
 	}
@@ -3473,52 +3473,21 @@ static int
 pf_check_in(void *arg, struct mbuf **m, struct ifnet *ifp, int dir,
     struct inpcb *inp)
 {
-	/*
-	 * XXX Wed Jul 9 22:03:16 2003 UTC
-	 * OpenBSD has changed its byte ordering convention on ip_len/ip_off
-	 * in network stack. OpenBSD's network stack have converted
-	 * ip_len/ip_off to host byte order frist as FreeBSD.
-	 * Now this is not true anymore , so we should convert back to network
-	 * byte order.
-	 */
-	struct ip *h = NULL;
 	int chk;
 
-	if ((*m)->m_pkthdr.len >= (int)sizeof(struct ip)) {
-		/* if m_pkthdr.len is less than ip header, pf will handle. */
-		h = mtod(*m, struct ip *);
-		HTONS(h->ip_len);
-		HTONS(h->ip_off);
-	}
-	CURVNET_SET(ifp->if_vnet);
 	chk = pf_test(PF_IN, ifp, m, inp);
-	CURVNET_RESTORE();
 	if (chk && *m) {
 		m_freem(*m);
 		*m = NULL;
 	}
-	if (*m != NULL) {
-		/* pf_test can change ip header location */
-		h = mtod(*m, struct ip *);
-		NTOHS(h->ip_len);
-		NTOHS(h->ip_off);
-	}
-	return chk;
+
+	return (chk);
 }
 
 static int
 pf_check_out(void *arg, struct mbuf **m, struct ifnet *ifp, int dir,
     struct inpcb *inp)
 {
-	/*
-	 * XXX Wed Jul 9 22:03:16 2003 UTC
-	 * OpenBSD has changed its byte ordering convention on ip_len/ip_off
-	 * in network stack. OpenBSD's network stack have converted
-	 * ip_len/ip_off to host byte order frist as FreeBSD.
-	 * Now this is not true anymore , so we should convert back to network
-	 * byte order.
-	 */
-	struct ip *h = NULL;
 	int chk;
 
 	/* We need a proper CSUM befor we start (s. OpenBSD ip_output) */
@@ -3526,26 +3495,14 @@ pf_check_out(void *arg, struct mbuf **m, struct ifnet *ifp, int dir,
 		in_delayed_cksum(*m);
 		(*m)->m_pkthdr.csum_flags &= ~CSUM_DELAY_DATA;
 	}
-	if ((*m)->m_pkthdr.len >= (int)sizeof(*h)) {
-		/* if m_pkthdr.len is less than ip header, pf will handle. */
-		h = mtod(*m, struct ip *);
-		HTONS(h->ip_len);
-		HTONS(h->ip_off);
-	}
-	CURVNET_SET(ifp->if_vnet);
+
 	chk = pf_test(PF_OUT, ifp, m, inp);
-	CURVNET_RESTORE();
 	if (chk && *m) {
 		m_freem(*m);
 		*m = NULL;
 	}
-	if (*m != NULL) {
-		/* pf_test can change ip header location */
-		h = mtod(*m, struct ip *);
-		NTOHS(h->ip_len);
-		NTOHS(h->ip_off);
-	}
-	return chk;
+
+	return (chk);
 }
 #endif
 
@@ -3554,10 +3511,6 @@ static int
 pf_check6_in(void *arg, struct mbuf **m, struct ifnet *ifp, int dir,
     struct inpcb *inp)
 {
-
-	/*
-	 * IPv6 is not affected by ip_len/ip_off byte order changes.
-	 */
 	int chk;
 
 	/*
@@ -3579,9 +3532,6 @@ static int
 pf_check6_out(void *arg, struct mbuf **m, struct ifnet *ifp, int dir,
     struct inpcb *inp)
 {
-	/*
-	 * IPv6 does not affected ip_len/ip_off byte order changes.
-	 */
 	int chk;
 
 	/* We need a proper CSUM before we start (s. OpenBSD ip_output) */
@@ -3756,7 +3706,7 @@ pf_modevent(module_t mod, int type, void *data)
 		/*
 		 * Module should not be unloaded due to race conditions.
 		 */
-		error = EPERM;
+		error = EBUSY;
 		break;
 	case MOD_UNLOAD:
 		error = pf_unload();

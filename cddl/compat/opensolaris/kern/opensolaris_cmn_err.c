@@ -60,6 +60,7 @@ vcmn_err(int ce, const char *fmt, va_list adx)
 	if (ce != CE_IGNORE) {
 		printf("%s", prefix);
 		vprintf(fmt, adx);
+		printf("\n");
 	}
 }
 
@@ -74,7 +75,8 @@ cmn_err(int type, const char *fmt, ...)
 }
 
 int
-assfail(const char *a, const char *f, int l) {
+assfail(const char *a, const char *f, int l)
+{
 
 	panic("solaris assert: %s, file: %s, line: %d", a, f, l);
 
@@ -83,7 +85,8 @@ assfail(const char *a, const char *f, int l) {
 
 void
 assfail3(const char *a, uintmax_t lv, const char *op, uintmax_t rv,
-    const char *f, int l) {
+    const char *f, int l)
+{
 
 	panic("solaris assert: %s (0x%jx %s 0x%jx), file: %s, line: %d",
 	    a, lv, op, rv, f, l);

@@ -389,7 +389,7 @@ mge_new_rxbuf(bus_dma_tag_t tag, bus_dmamap_t map, struct mbuf **mbufp,
 
 	KASSERT(mbufp != NULL, ("NULL mbuf pointer!"));
 
-	new_mbuf = m_getcl(M_DONTWAIT, MT_DATA, M_PKTHDR);
+	new_mbuf = m_getcl(M_NOWAIT, MT_DATA, M_PKTHDR);
 	if (new_mbuf == NULL)
 		return (ENOBUFS);
 	new_mbuf->m_len = new_mbuf->m_pkthdr.len = new_mbuf->m_ext.ext_size;
@@ -1549,7 +1549,7 @@ mge_start_locked(struct ifnet *ifp)
 		if (m0 == NULL)
 			break;
 
-		mtmp = m_defrag(m0, M_DONTWAIT);
+		mtmp = m_defrag(m0, M_NOWAIT);
 		if (mtmp)
 			m0 = mtmp;
 
@@ -1703,9 +1703,7 @@ mge_offload_setup_descriptor(struct mge_softc *sc, struct mge_desc_wrapper *dw)
 
 		ip = (struct ip *)(m0->m_data + ehlen);
 		cmd_status |= MGE_TX_IP_HDR_SIZE(ip->ip_hl);
-
-		if ((m0->m_flags & M_FRAG) == 0)
-			cmd_status |= MGE_TX_NOT_FRAGMENT;
+		cmd_status |= MGE_TX_NOT_FRAGMENT;
 	}
 
 	if (csum_flags & CSUM_IP)

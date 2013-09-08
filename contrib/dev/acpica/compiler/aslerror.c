@@ -1,4 +1,3 @@
-
 /******************************************************************************
  *
  * Module Name: aslerror - Error handling and statistics
@@ -6,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2012, Intel Corp.
+ * Copyright (C) 2000 - 2013, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -95,7 +94,7 @@ AeClearErrorLog (
  *
  * RETURN:      None
  *
- * DESCRIPTION: Add a new error node to the error log.  The error log is
+ * DESCRIPTION: Add a new error node to the error log. The error log is
  *              ordered by the "logical" line number (cumulative line number
  *              including all include files.)
  *
@@ -202,6 +201,7 @@ AePrintException (
         switch (Enode->Level)
         {
         case ASL_REMARK:
+
             if (!Gbl_DisplayRemarks)
             {
                 return;
@@ -209,6 +209,7 @@ AePrintException (
             break;
 
         case ASL_OPTIMIZATION:
+
             if (!Gbl_DisplayOptimizations)
             {
                 return;
@@ -216,6 +217,7 @@ AePrintException (
             break;
 
         default:
+
             break;
         }
     }
@@ -295,7 +297,7 @@ AePrintException (
                         else
                         {
                             RActual = fread (&SourceByte, 1, 1, SourceFile);
-                            if (!RActual)
+                            if (RActual != 1)
                             {
                                 fprintf (OutputFile,
                                     "[*** iASL: Read error on source code temp file %s ***]",
@@ -303,18 +305,36 @@ AePrintException (
                             }
                             else
                             {
-                                while (RActual && SourceByte && (SourceByte != '\n') && (Total < 256))
-                                {
-                                    fwrite (&SourceByte, 1, 1, OutputFile);
-                                    RActual = fread (&SourceByte, 1, 1, SourceFile);
-                                    Total++;
-                                }
+                                /* Read/write the source line, up to the maximum line length */
 
-                                if (Total >= 256)
+                                while (RActual && SourceByte && (SourceByte != '\n'))
                                 {
-                                    fprintf (OutputFile,
-                                        "\n[*** iASL: Long input line, an error occurred at column %u ***]",
-                                        Enode->Column);
+                                    if (Total < 256)
+                                    {
+                                        /* After the max line length, we will just read the line, no write */
+
+                                        if (fwrite (&SourceByte, 1, 1, OutputFile) != 1)
+                                        {
+                                            printf ("[*** iASL: Write error on output file ***]\n");
+                                            return;
+                                        }
+                                    }
+                                    else if (Total == 256)
+                                    {
+                                        fprintf (OutputFile,
+                                            "\n[*** iASL: Very long input line, message below refers to column %u ***]",
+                                            Enode->Column);
+                                    }
+
+                                    RActual = fread (&SourceByte, 1, 1, SourceFile);
+                                    if (RActual != 1)
+                                    {
+                                        fprintf (OutputFile,
+                                            "[*** iASL: Read error on source code temp file %s ***]",
+                                            Gbl_Files[ASL_FILE_SOURCE_OUTPUT].Filename);
+                                        return;
+                                    }
+                                    Total++;
                                 }
                             }
                         }
@@ -649,12 +669,118 @@ AslCommonError (
 
         Gbl_SourceLine = 0;
         Gbl_NextError = Gbl_ErrorLog;
-        CmDoOutputFiles ();
         CmCleanupAndExit ();
         exit(1);
     }
 
     return;
+}
+
+
+/*******************************************************************************
+ *
+ * FUNCTION:    AslDisableException
+ *
+ * PARAMETERS:  MessageIdString     - ID to be disabled
+ *
+ * RETURN:      Status
+ *
+ * DESCRIPTION: Enter a message ID into the global disabled messages table
+ *
+ ******************************************************************************/
+
+ACPI_STATUS
+AslDisableException (
+    char                    *MessageIdString)
+{
+    UINT32                  MessageId;
+
+
+    /* Convert argument to an integer and validate it */
+
+    MessageId = (UINT32) strtoul (MessageIdString, NULL, 0);
+
+    if ((MessageId < 2000) || (MessageId > 5999))
+    {
+        printf ("\"%s\" is not a valid warning/remark ID\n",
+            MessageIdString);
+        return (AE_BAD_PARAMETER);
+    }
+
+    /* Insert value into the global disabled message array */
+
+    if (Gbl_DisabledMessagesIndex >= ASL_MAX_DISABLED_MESSAGES)
+    {
+        printf ("Too many messages have been disabled (max %u)\n",
+            ASL_MAX_DISABLED_MESSAGES);
+        return (AE_LIMIT);
+    }
+
+    Gbl_DisabledMessages[Gbl_DisabledMessagesIndex] = MessageId;
+    Gbl_DisabledMessagesIndex++;
+    return (AE_OK);
+}
+
+
+/*******************************************************************************
+ *
+ * FUNCTION:    AslIsExceptionDisabled
+ *
+ * PARAMETERS:  Level               - Seriousness (Warning/error, etc.)
+ *              MessageId           - Index into global message buffer
+ *
+ * RETURN:      TRUE if exception/message should be ignored
+ *
+ * DESCRIPTION: Check if the user has specified options such that this
+ *              exception should be ignored
+ *
+ ******************************************************************************/
+
+BOOLEAN
+AslIsExceptionDisabled (
+    UINT8                   Level,
+    UINT8                   MessageId)
+{
+    UINT32                  EncodedMessageId;
+    UINT32                  i;
+
+
+    switch (Level)
+    {
+    case ASL_WARNING2:
+    case ASL_WARNING3:
+
+        /* Check for global disable via -w1/-w2/-w3 options */
+
+        if (Level > Gbl_WarningLevel)
+        {
+            return (TRUE);
+        }
+        /* Fall through */
+
+    case ASL_WARNING:
+    case ASL_REMARK:
+        /*
+         * Ignore this warning/remark if it has been disabled by
+         * the user (-vw option)
+         */
+        EncodedMessageId = MessageId + ((Level + 1) * 1000);
+        for (i = 0; i < Gbl_DisabledMessagesIndex; i++)
+        {
+            /* Simple implementation via fixed array */
+
+            if (EncodedMessageId == Gbl_DisabledMessages[i])
+            {
+                return (TRUE);
+            }
+        }
+        break;
+
+    default:
+        break;
+    }
+
+    return (FALSE);
 }
 
 
@@ -682,32 +808,25 @@ AslError (
     char                    *ExtraMessage)
 {
 
-    switch (Level)
-    {
-    case ASL_WARNING2:
-    case ASL_WARNING3:
-        if (Gbl_WarningLevel < Level)
-        {
-            return;
-        }
-        break;
+    /* Check if user wants to ignore this exception */
 
-    default:
-        break;
+    if (AslIsExceptionDisabled (Level, MessageId))
+    {
+        return;
     }
 
     if (Op)
     {
         AslCommonError (Level, MessageId, Op->Asl.LineNumber,
-                        Op->Asl.LogicalLineNumber,
-                        Op->Asl.LogicalByteOffset,
-                        Op->Asl.Column,
-                        Op->Asl.Filename, ExtraMessage);
+            Op->Asl.LogicalLineNumber,
+            Op->Asl.LogicalByteOffset,
+            Op->Asl.Column,
+            Op->Asl.Filename, ExtraMessage);
     }
     else
     {
         AslCommonError (Level, MessageId, 0,
-                        0, 0, 0, NULL, ExtraMessage);
+            0, 0, 0, NULL, ExtraMessage);
     }
 }
 
@@ -783,5 +902,5 @@ AslCompilererror (
         Gbl_CurrentColumn, Gbl_Files[ASL_FILE_INPUT].Filename,
         ACPI_CAST_PTR (char, CompilerMessage));
 
-    return 0;
+    return (0);
 }

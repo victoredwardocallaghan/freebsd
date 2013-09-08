@@ -5,7 +5,7 @@
  ******************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2012, Intel Corp.
+ * Copyright (C) 2000 - 2013, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -267,6 +267,7 @@ AcpiDbEnumerateObject (
         break;
 
     default:
+
         break;
     }
 }
@@ -314,7 +315,7 @@ AcpiDbClassifyOneObject (
         AcpiGbl_NodeTypeCount [Type]++;
     }
 
-    return AE_OK;
+    return (AE_OK);
 
 
 #ifdef ACPI_FUTURE_IMPLEMENTATION
@@ -479,7 +480,6 @@ AcpiDbDisplayStatistics (
         }
         break;
 
-
     case CMD_STAT_SIZES:
 
         AcpiOsPrintf ("\nInternal object sizes:\n\n");
@@ -530,7 +530,6 @@ AcpiDbDisplayStatistics (
         AcpiOsPrintf ("Notify Info      %3d\n", sizeof (ACPI_NOTIFY_INFO));
         break;
 
-
     case CMD_STAT_STACK:
 #if defined(ACPI_DEBUG_OUTPUT)
 
@@ -545,6 +544,7 @@ AcpiDbDisplayStatistics (
         break;
 
     default:
+
         break;
     }
 

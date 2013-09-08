@@ -125,16 +125,16 @@ __FBSDID("$FreeBSD$");
 #include <sys/smp.h>
 #endif
 
-
 #include <geom/geom.h>
 
 #include <machine/_inttypes.h>
-#include <machine/xen/xen-os.h>
+#include <machine/intr_machdep.h>
 
 #include <vm/vm.h>
 #include <vm/vm_extern.h>
 #include <vm/vm_kern.h>
 
+#include <xen/xen-os.h>
 #include <xen/blkif.h>
 #include <xen/evtchn.h>
 #include <xen/gnttab.h>
@@ -145,7 +145,8 @@ __FBSDID("$FreeBSD$");
 
 #include <xen/xenbus/xenbusvar.h>
 
-#define NUM_ELEMENTS(x) (sizeof(x) / sizeof(*(x)))
+#include <machine/xen/xenvar.h>
+#include <machine/xen/xenfunc.h>
 
 /*--------------------------- Forward Declarations --------------------------*/
 /** Function signature for shutdown event handlers. */
@@ -165,7 +166,7 @@ struct xctrl_shutdown_reason {
 };
 
 /** Lookup table for shutdown event name to handler. */
-static struct xctrl_shutdown_reason xctrl_shutdown_reasons[] = {
+static const struct xctrl_shutdown_reason xctrl_shutdown_reasons[] = {
 	{ "poweroff", xctrl_poweroff },
 	{ "reboot",   xctrl_reboot   },
 	{ "suspend",  xctrl_suspend  },
@@ -198,7 +199,6 @@ extern void xencons_resume(void);
 static void
 xctrl_suspend()
 {
-	u_int cpuid;
 	int i, j, k, fpp;
 	unsigned long max_pfn, start_info_mfn;
 
@@ -207,6 +207,8 @@ xctrl_suspend()
 #ifdef SMP
 	struct thread *td;
 	cpuset_t map;
+	u_int cpuid;
+
 	/*
 	 * Bind us to CPU 0 and stop any other VCPUs.
 	 */
@@ -231,7 +233,7 @@ xctrl_suspend()
 	mtx_lock(&Giant);
 	if (DEVICE_SUSPEND(root_bus) != 0) {
 		mtx_unlock(&Giant);
-		printf("xen_suspend: device_suspend failed\n");
+		printf("%s: device_suspend failed\n", __func__);
 #ifdef SMP
 		if (!CPU_EMPTY(&map))
 			restart_cpus(map);
@@ -244,6 +246,7 @@ xctrl_suspend()
 
 	xencons_suspend();
 	gnttab_suspend();
+	intr_suspend();
 
 	max_pfn = HYPERVISOR_shared_info->arch.max_pfn;
 
@@ -284,7 +287,7 @@ xctrl_suspend()
 	HYPERVISOR_shared_info->arch.max_pfn = max_pfn;
 
 	gnttab_resume();
-	irq_resume();
+	intr_resume();
 	local_irq_enable();
 	xencons_resume();
 
@@ -343,9 +346,9 @@ xctrl_suspend()
 	 * drivers need this.
 	 */
 	mtx_lock(&Giant);
-	if (DEVICE_SUSPEND(root_bus)) {
+	if (DEVICE_SUSPEND(root_bus) != 0) {
 		mtx_unlock(&Giant);
-		printf("xen_suspend: device_suspend failed\n");
+		printf("%s: device_suspend failed\n", __func__);
 		return;
 	}
 	mtx_unlock(&Giant);
@@ -354,13 +357,11 @@ xctrl_suspend()
 	 * Prevent any races with evtchn_interrupt() handler.
 	 */
 	disable_intr();
-	irq_suspend();
+	intr_suspend();
 
 	suspend_cancelled = HYPERVISOR_suspend(0);
-	if (suspend_cancelled)
-		irq_resume();
-	else
-		xenpci_resume();
+
+	intr_resume();
 
 	/*
 	 * Re-enable interrupts and put the scheduler back to normal.
@@ -396,8 +397,8 @@ xctrl_halt()
 static void
 xctrl_on_watch_event(struct xs_watch *watch, const char **vec, unsigned int len)
 {
-	struct xctrl_shutdown_reason *reason;
-	struct xctrl_shutdown_reason *last_reason;
+	const struct xctrl_shutdown_reason *reason;
+	const struct xctrl_shutdown_reason *last_reason;
 	char *result;
 	int   error;
 	int   result_len;
@@ -408,7 +409,7 @@ xctrl_on_watch_event(struct xs_watch *watch, const char **vec, unsigned int len)
 		return;
 
 	reason = xctrl_shutdown_reasons;
-	last_reason = reason + NUM_ELEMENTS(xctrl_shutdown_reasons);
+	last_reason = reason + nitems(xctrl_shutdown_reasons);
 	while (reason < last_reason) {
 
 		if (!strcmp(result, reason->name)) {
@@ -511,10 +512,10 @@ static device_method_t xctrl_methods[] = {
 	DEVMETHOD(device_attach,        xctrl_attach), 
 	DEVMETHOD(device_detach,        xctrl_detach), 
  
-	{ 0, 0 } 
+	DEVMETHOD_END
 }; 
 
 DEFINE_CLASS_0(xctrl, xctrl_driver, xctrl_methods, sizeof(struct xctrl_softc));
 devclass_t xctrl_devclass; 
  
-DRIVER_MODULE(xctrl, xenstore, xctrl_driver, xctrl_devclass, 0, 0);
+DRIVER_MODULE(xctrl, xenstore, xctrl_driver, xctrl_devclass, NULL, NULL);

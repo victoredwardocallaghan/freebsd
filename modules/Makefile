@@ -9,6 +9,7 @@ SUBDIR=	\
 	${_3dfx} \
 	${_3dfx_linux} \
 	${_aac} \
+	${_aacraid} \
 	accf_data \
 	accf_dns \
 	accf_http \
@@ -67,8 +68,6 @@ SUBDIR=	\
 	${_ciss} \
 	${_cm} \
 	${_cmx} \
-	coda \
-	coda5 \
 	${_coff} \
 	${_coretemp} \
 	${_cp} \
@@ -80,8 +79,9 @@ SUBDIR=	\
 	${_cs} \
 	${_ct} \
 	${_ctau} \
+	ctl \
 	${_cxgb} \
-	cxgbe \
+	${_cxgbe} \
 	${_cyclic} \
 	dc \
 	dcons \
@@ -108,9 +108,10 @@ SUBDIR=	\
 	fdc \
 	fdescfs \
 	${_fe} \
-	filemon \
+	${_filemon} \
 	firewire \
 	firmware \
+	fuse \
 	${_fxp} \
 	gem \
 	geom \
@@ -122,6 +123,7 @@ SUBDIR=	\
 	${_hpt27xx} \
 	${_hptiop} \
 	${_hptmv} \
+	${_hptnr} \
 	${_hptrr} \
 	hwpmc \
 	${_i2c} \
@@ -151,12 +153,13 @@ SUBDIR=	\
 	${_ipfw} \
 	ipfw_nat \
 	${_ipmi} \
+	ip6_mroute_mod \
 	ip_mroute_mod \
 	${_ips} \
 	${_ipw} \
 	${_ipwfw} \
 	${_isci} \
-	iscsi \
+	iscsi_initiator \
 	isp \
 	${_ispfw} \
 	${_iwi} \
@@ -241,14 +244,12 @@ SUBDIR=	\
 	nge \
 	nmdm \
 	${_nsp} \
-	ntfs \
-	ntfs_iconv \
 	nullfs \
+	${_ntb} \
 	${_nvd} \
 	${_nve} \
 	${_nvme} \
 	${_nvram} \
-	${_nwfs} \
 	${_nxge} \
 	${_opensolaris} \
 	oce \
@@ -262,7 +263,6 @@ SUBDIR=	\
 	${_pfsync} \
 	plip \
 	${_pmc} \
-	portalfs \
 	ppbus \
 	ppc \
 	ppi \
@@ -272,7 +272,9 @@ SUBDIR=	\
 	${_pst} \
 	pty  \
 	puc \
+	${_qlxge} \
 	${_qlxgb} \
+	${_qlxgbe} \
 	ral \
 	${_ralfw} \
 	${_random} \
@@ -281,7 +283,6 @@ SUBDIR=	\
 	re \
 	reiserfs \
 	rl \
-	${_runfw} \
 	${_s3} \
 	${_safe} \
 	${_sbni} \
@@ -289,6 +290,7 @@ SUBDIR=	\
 	scd \
 	${_scsi_low} \
 	sdhci \
+	sdhci_pci \
 	sem \
 	send \
 	${_sf} \
@@ -339,6 +341,8 @@ SUBDIR=	\
 	vge \
 	${_viawd} \
 	vkbd \
+	${_vmm} \
+	${_vmware} \
 	${_vpo} \
 	vr \
 	vte \
@@ -359,10 +363,14 @@ SUBDIR=	\
 	${_wpifw} \
 	${_x86bios} \
 	${_xe} \
-	xfs \
 	xl \
 	${_zfs} \
 	zlib \
+
+.if ${MACHINE_CPUARCH} == "i386" || ${MACHINE_CPUARCH} == "amd64"
+_filemon=	filemon
+_vmware=	vmware
+.endif
 
 .if ${MACHINE_CPUARCH} != "powerpc" && ${MACHINE_CPUARCH} != "arm" && \
 	${MACHINE_CPUARCH} != "mips"
@@ -378,6 +386,10 @@ _sym=		sym
 .if ${MK_SOURCELESS_UCODE} != "no"
 _cxgb=		cxgb
 .endif
+.endif
+
+.if ${MK_SOURCELESS_UCODE} != "no"
+_cxgbe=		cxgbe
 .endif
 
 .if ${MK_CRYPT} != "no" || defined(ALL_MODULES)
@@ -434,7 +446,6 @@ _fxp=		fxp
 _ispfw=		ispfw
 _mwlfw=		mwlfw
 _ralfw=		ralfw
-_runfw=		runfw
 _sf=		sf
 _sn=		sn
 _ti=		ti
@@ -502,15 +513,9 @@ _mlx4ib=	mlx4ib
 _mlxen=		mlxen
 _mthca=		mthca
 .endif
-.if ${MK_NCP} != "no"
-_ncp=		ncp
-.endif
 _ncv=		ncv
 _ndis=		ndis
 _nsp=		nsp
-.if ${MK_NCP} != "no"
-_nwfs=		nwfs
-.endif
 .if ${MK_CDDL} != "no" || defined(ALL_MODULES)
 _opensolaris=	opensolaris
 .endif
@@ -538,6 +543,7 @@ _zfs=		zfs
 .endif
 .if ${MACHINE} == "i386"
 _aac=		aac
+_aacraid=	aacraid
 _acpi=		acpi
 .if ${MK_CRYPT} != "no" || defined(ALL_MODULES)
 _aesni=		aesni
@@ -564,6 +570,7 @@ _hpt27xx=	hpt27xx
 _hptiop=	hptiop
 .if ${MK_SOURCELESS_HOST} != "no"
 _hptmv=		hptmv
+_hptnr=		hptnr
 _hptrr=		hptrr
 .endif
 _ichwd=		ichwd
@@ -620,6 +627,7 @@ _snc=		snc
 
 .if ${MACHINE_CPUARCH} == "amd64"
 _aac=		aac
+_aacraid=	aacraid
 _aout=		aout
 _acpi=		acpi
 .if ${MK_CRYPT} != "no" || defined(ALL_MODULES)
@@ -660,6 +668,7 @@ _hpt27xx=	hpt27xx
 _hptiop=	hptiop
 .if ${MK_SOURCELESS_HOST} != "no"
 _hptmv=		hptmv
+_hptnr=		hptnr
 _hptrr=		hptrr
 .endif
 _i2c=		i2c
@@ -699,6 +708,7 @@ _mthca=		mthca
 .endif
 _ndis=		ndis
 _nfe=		nfe
+_ntb=		ntb
 _nvd=		nvd
 .if ${MK_SOURCELESS_HOST} != "no"
 _nve=		nve
@@ -713,7 +723,9 @@ _opensolaris=	opensolaris
 _padlock=	padlock
 .endif
 _pccard=	pccard
+_qlxge=		qlxge
 _qlxgb=		qlxgb
+_qlxgbe=	qlxgbe
 _rdma=		rdma
 _s3=		s3
 _safe=		safe
@@ -729,6 +741,7 @@ _twa=		twa
 _vesa=		vesa
 _viawd=		viawd
 _virtio=	virtio
+_vmm=		vmm
 _vxge=  	vxge
 _x86bios=	x86bios
 _wbwd=		wbwd
@@ -749,6 +762,7 @@ _cpsw=		cpsw
 
 .if ${MACHINE_CPUARCH} == "ia64"
 _aac=		aac
+_aacraid=	aacraid
 _aic=		aic
 _an=		an
 _arcnet=	arcnet
@@ -794,17 +808,25 @@ _cardbus=	cardbus
 _cbb=		cbb
 _cfi=		cfi
 _cpufreq=	cpufreq
+.if ${MK_CDDL} != "no" || defined(ALL_MODULES)
+_cyclic=	cyclic
+.endif
+_drm=		drm
+.if ${MK_CDDL} != "no" || defined(ALL_MODULES)
+_dtrace=	dtrace
+.endif
 _exca=		exca
 _nvram=		powermac_nvram
 _pccard=	pccard
 _smbfs=		smbfs
 _sound=		sound
-.endif
-
-.if ${MACHINE_ARCH} == "powerpc64"
 .if ${MK_CDDL} != "no" || defined(ALL_MODULES)
 _opensolaris=	opensolaris
 .endif
+_wi=		wi
+.endif
+
+.if ${MACHINE_ARCH} == "powerpc64"
 .if ${MK_ZFS} != "no" || defined(ALL_MODULES)
 _zfs=		zfs
 .endif

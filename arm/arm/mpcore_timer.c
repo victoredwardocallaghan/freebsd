@@ -115,6 +115,8 @@ static struct resource_spec arm_tmr_spec[] = {
 
 static struct arm_tmr_softc *arm_tmr_sc = NULL;
 
+uint32_t platform_arm_tmr_freq = 0;
+
 #define	tmr_prv_read_4(reg)		\
     bus_space_read_4(arm_tmr_sc->prv_bst, arm_tmr_sc->prv_bsh, reg)
 #define	tmr_prv_write_4(reg, val)		\
@@ -128,7 +130,7 @@ static struct arm_tmr_softc *arm_tmr_sc = NULL;
 static timecounter_get_t arm_tmr_get_timecount;
 
 static struct timecounter arm_tmr_timecount = {
-	.tc_name           = "ARM MPCore Timecouter",
+	.tc_name           = "ARM MPCore Timecounter",
 	.tc_get_timecount  = arm_tmr_get_timecount,
 	.tc_poll_pps       = NULL,
 	.tc_counter_mask   = ~0u,
@@ -167,31 +169,23 @@ arm_tmr_get_timecount(struct timecounter *tc)
  *	Always returns 0
  */
 static int
-arm_tmr_start(struct eventtimer *et, struct bintime *first,
-              struct bintime *period)
+arm_tmr_start(struct eventtimer *et, sbintime_t first, sbintime_t period)
 {
-	struct arm_tmr_softc *sc = (struct arm_tmr_softc *)et->et_priv;
 	uint32_t load, count;
 	uint32_t ctrl;
 
 	ctrl = PRV_TIMER_CTRL_IRQ_ENABLE | PRV_TIMER_CTRL_TIMER_ENABLE;
 
-	if (period != NULL) {
-		load = (et->et_frequency * (period->frac >> 32)) >> 32;
-		if (period->sec > 0)
-			load += et->et_frequency * period->sec;
+	if (period != 0) {
+		load = ((uint32_t)et->et_frequency * period) >> 32;
 		ctrl |= PRV_TIMER_CTRL_AUTO_RELOAD;
-	} else {
+	} else
 		load = 0;
-	}
 
-	if (first != NULL) {
-		count = (sc->et.et_frequency * (first->frac >> 32)) >> 32;
-		if (first->sec != 0)
-			count += sc->et.et_frequency * first->sec;
-	} else {
+	if (first != 0)
+		count = ((uint32_t)et->et_frequency * first) >> 32;
+	else
 		count = load;
-	}
 
 	tmr_prv_write_4(PRV_TIMER_LOAD, load);
 	tmr_prv_write_4(PRV_TIMER_COUNT, count);
@@ -282,13 +276,18 @@ arm_tmr_attach(device_t dev)
 	if (arm_tmr_sc)
 		return (ENXIO);
 
-	/* Get the base clock frequency */
-	node = ofw_bus_get_node(dev);
-	if ((OF_getprop(node, "clock-frequency", &clock, sizeof(clock))) <= 0) {
-		device_printf(dev, "missing clock-frequency attribute in FDT\n");
-		return (ENXIO);
+	if (platform_arm_tmr_freq != 0)
+		sc->clkfreq = platform_arm_tmr_freq;
+	else {
+		/* Get the base clock frequency */
+		node = ofw_bus_get_node(dev);
+		if ((OF_getprop(node, "clock-frequency", &clock,
+		    sizeof(clock))) <= 0) {
+			device_printf(dev, "missing clock-frequency attribute in FDT\n");
+			return (ENXIO);
+		}
+		sc->clkfreq = fdt32_to_cpu(clock);
 	}
-	sc->clkfreq = fdt32_to_cpu(clock);
 
 
 	if (bus_alloc_resources(dev, arm_tmr_spec, sc->tmr_res)) {
@@ -330,12 +329,8 @@ arm_tmr_attach(device_t dev)
 	sc->et.et_quality = 1000;
 
 	sc->et.et_frequency = sc->clkfreq;
-	sc->et.et_min_period.sec = 0;
-	sc->et.et_min_period.frac =
-            ((0x00000002LLU << 32) / sc->et.et_frequency) << 32;
-	sc->et.et_max_period.sec = 0xfffffff0U / sc->et.et_frequency;
-	sc->et.et_max_period.frac =
-            ((0xfffffffeLLU << 32) / sc->et.et_frequency) << 32;
+	sc->et.et_min_period = (0x00000002LLU << 32) / sc->et.et_frequency;
+	sc->et.et_max_period = (0xfffffffeLLU << 32) / sc->et.et_frequency;
 	sc->et.et_start = arm_tmr_start;
 	sc->et.et_stop = arm_tmr_stop;
 	sc->et.et_priv = sc;

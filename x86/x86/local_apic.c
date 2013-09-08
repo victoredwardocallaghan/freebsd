@@ -91,6 +91,7 @@ CTASSERT(IPI_STOP < APIC_SPURIOUS_INT);
 #define	IRQ_TIMER	(NUM_IO_INTS + 1)
 #define	IRQ_SYSCALL	(NUM_IO_INTS + 2)
 #define	IRQ_DTRACE_RET	(NUM_IO_INTS + 3)
+#define	IRQ_EVTCHN	(NUM_IO_INTS + 4)
 
 /*
  * Support for local APICs.  Local APICs manage interrupts on each
@@ -169,7 +170,7 @@ static void	lapic_timer_stop(struct lapic *);
 static void	lapic_timer_set_divisor(u_int divisor);
 static uint32_t	lvt_mode(struct lapic *la, u_int pin, uint32_t value);
 static int	lapic_et_start(struct eventtimer *et,
-    struct bintime *first, struct bintime *period);
+    sbintime_t first, sbintime_t period);
 static int	lapic_et_stop(struct eventtimer *et);
 
 struct pic lapic_pic = { .pic_resume = lapic_resume };
@@ -227,8 +228,8 @@ lapic_init(vm_paddr_t addr)
 	/* Map the local APIC and setup the spurious interrupt handler. */
 	KASSERT(trunc_page(addr) == addr,
 	    ("local APIC not aligned on a page boundary"));
-	lapic = pmap_mapdev(addr, sizeof(lapic_t));
 	lapic_paddr = addr;
+	lapic = pmap_mapdev(addr, sizeof(lapic_t));
 	setidt(APIC_SPURIOUS_INT, IDTVEC(spuriousint), SDT_APIC, SEL_KPL,
 	    GSEL_APIC);
 
@@ -268,10 +269,8 @@ lapic_init(vm_paddr_t addr)
 		}
 		lapic_et.et_frequency = 0;
 		/* We don't know frequency yet, so trying to guess. */
-		lapic_et.et_min_period.sec = 0;
-		lapic_et.et_min_period.frac = 0x00001000LL << 32;
-		lapic_et.et_max_period.sec = 1;
-		lapic_et.et_max_period.frac = 0;
+		lapic_et.et_min_period = 0x00001000LL;
+		lapic_et.et_max_period = SBT_1S;
 		lapic_et.et_start = lapic_et_start;
 		lapic_et.et_stop = lapic_et_stop;
 		lapic_et.et_priv = NULL;
@@ -314,6 +313,9 @@ lapic_create(u_int apic_id, int boot_cpu)
 #ifdef KDTRACE_HOOKS
 	lapics[apic_id].la_ioint_irqs[IDT_DTRACE_RET - APIC_IO_INTS] =
 	    IRQ_DTRACE_RET;
+#endif
+#ifdef XENHVM
+	lapics[apic_id].la_ioint_irqs[IDT_EVTCHN - APIC_IO_INTS] = IRQ_EVTCHN;
 #endif
 
 
@@ -487,8 +489,7 @@ lapic_disable_pmc(void)
 }
 
 static int
-lapic_et_start(struct eventtimer *et,
-    struct bintime *first, struct bintime *period)
+lapic_et_start(struct eventtimer *et, sbintime_t first, sbintime_t period)
 {
 	struct lapic *la;
 	u_long value;
@@ -513,28 +514,18 @@ lapic_et_start(struct eventtimer *et,
 			printf("lapic: Divisor %lu, Frequency %lu Hz\n",
 			    lapic_timer_divisor, value);
 		et->et_frequency = value;
-		et->et_min_period.sec = 0;
-		et->et_min_period.frac =
-		    ((0x00000002LLU << 32) / et->et_frequency) << 32;
-		et->et_max_period.sec = 0xfffffffeLLU / et->et_frequency;
-		et->et_max_period.frac =
-		    ((0xfffffffeLLU << 32) / et->et_frequency) << 32;
+		et->et_min_period = (0x00000002LLU << 32) / et->et_frequency;
+		et->et_max_period = (0xfffffffeLLU << 32) / et->et_frequency;
 	}
 	if (la->la_timer_mode == 0)
 		lapic_timer_set_divisor(lapic_timer_divisor);
-	if (period != NULL) {
+	if (period != 0) {
 		la->la_timer_mode = 1;
-		la->la_timer_period =
-		    (et->et_frequency * (period->frac >> 32)) >> 32;
-		if (period->sec != 0)
-			la->la_timer_period += et->et_frequency * period->sec;
+		la->la_timer_period = ((uint32_t)et->et_frequency * period) >> 32;
 		lapic_timer_periodic(la, la->la_timer_period, 1);
 	} else {
 		la->la_timer_mode = 2;
-		la->la_timer_period =
-		    (et->et_frequency * (first->frac >> 32)) >> 32;
-		if (first->sec != 0)
-			la->la_timer_period += et->et_frequency * first->sec;
+		la->la_timer_period = ((uint32_t)et->et_frequency * first) >> 32;
 		lapic_timer_oneshot(la, la->la_timer_period, 1);
 	}
 	return (0);
@@ -802,7 +793,7 @@ lapic_handle_timer(struct trapframe *frame)
 	 * Don't do any accounting for the disabled HTT cores, since it
 	 * will provide misleading numbers for the userland.
 	 *
-	 * No locking is necessary here, since even if we loose the race
+	 * No locking is necessary here, since even if we lose the race
 	 * when hlt_cpus_mask changes it is not a big deal, really.
 	 *
 	 * Don't do that for ULE, since ULE doesn't consider hlt_cpus_mask
@@ -1150,6 +1141,10 @@ DB_SHOW_COMMAND(apic, db_show_apic)
 			if (irq == IRQ_DTRACE_RET)
 				continue;
 #endif
+#ifdef XENHVM
+			if (irq == IRQ_EVTCHN)
+				continue;
+#endif
 			db_printf("vec 0x%2x -> ", i + APIC_IO_INTS);
 			if (irq == IRQ_TIMER)
 				db_printf("lapic timer\n");
@@ -1360,11 +1355,19 @@ apic_setup_io(void *dummy __unused)
 
 	if (best_enum == NULL)
 		return;
+
+	/*
+	 * Local APIC must be registered before other PICs and pseudo PICs
+	 * for proper suspend/resume order.
+	 */
+#ifndef XEN
+	intr_register_pic(&lapic_pic);
+#endif
+
 	retval = best_enum->apic_setup_io();
 	if (retval != 0)
 		printf("%s: Failed to setup I/O APICs: returned %d\n",
 		    best_enum->apic_name, retval);
-
 #ifdef XEN
 	return;
 #endif
@@ -1373,7 +1376,6 @@ apic_setup_io(void *dummy __unused)
 	 * properly program the LINT pins.
 	 */
 	lapic_setup(1);
-	intr_register_pic(&lapic_pic);
 	if (bootverbose)
 		lapic_dump("BSP");
 

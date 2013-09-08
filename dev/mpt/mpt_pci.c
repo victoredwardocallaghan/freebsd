@@ -261,78 +261,11 @@ mpt_pci_probe(device_t dev)
 	return (rval);
 }
 
-#if	__FreeBSD_version < 500000  
-static void
-mpt_set_options(struct mpt_softc *mpt)
-{
-	int bitmap;
-
-	bitmap = 0;
-	if (getenv_int("mpt_disable", &bitmap)) {
-		if (bitmap & (1 << mpt->unit)) {
-			mpt->disabled = 1;
-		}
-	}
-	bitmap = 0;
-	if (getenv_int("mpt_debug", &bitmap)) {
-		if (bitmap & (1 << mpt->unit)) {
-			mpt->verbose = MPT_PRT_DEBUG;
-		}
-	}
-	bitmap = 0;
-	if (getenv_int("mpt_debug1", &bitmap)) {
-		if (bitmap & (1 << mpt->unit)) {
-			mpt->verbose = MPT_PRT_DEBUG1;
-		}
-	}
-	bitmap = 0;
-	if (getenv_int("mpt_debug2", &bitmap)) {
-		if (bitmap & (1 << mpt->unit)) {
-			mpt->verbose = MPT_PRT_DEBUG2;
-		}
-	}
-	bitmap = 0;
-	if (getenv_int("mpt_debug3", &bitmap)) {
-		if (bitmap & (1 << mpt->unit)) {
-			mpt->verbose = MPT_PRT_DEBUG3;
-		}
-	}
-
-	mpt->cfg_role = MPT_ROLE_DEFAULT;
-	bitmap = 0;
-	if (getenv_int("mpt_nil_role", &bitmap)) {
-		if (bitmap & (1 << mpt->unit)) {
-			mpt->cfg_role = 0;
-		}
-		mpt->do_cfg_role = 1;
-	}
-	bitmap = 0;
-	if (getenv_int("mpt_tgt_role", &bitmap)) {
-		if (bitmap & (1 << mpt->unit)) {
-			mpt->cfg_role |= MPT_ROLE_TARGET;
-		}
-		mpt->do_cfg_role = 1;
-	}
-	bitmap = 0;
-	if (getenv_int("mpt_ini_role", &bitmap)) {
-		if (bitmap & (1 << mpt->unit)) {
-			mpt->cfg_role |= MPT_ROLE_INITIATOR;
-		}
-		mpt->do_cfg_role = 1;
-	}
-	mpt->msi_enable = 0;
-}
-#else
 static void
 mpt_set_options(struct mpt_softc *mpt)
 {
 	int tval;
 
-	tval = 0;
-	if (resource_int_value(device_get_name(mpt->dev),
-	    device_get_unit(mpt->dev), "disable", &tval) == 0 && tval != 0) {
-		mpt->disabled = 1;
-	}
 	tval = 0;
 	if (resource_int_value(device_get_name(mpt->dev),
 	    device_get_unit(mpt->dev), "debug", &tval) == 0 && tval != 0) {
@@ -354,7 +287,6 @@ mpt_set_options(struct mpt_softc *mpt)
 		mpt->msi_enable = tval;
 	}
 }
-#endif
 
 static void
 mpt_link_peer(struct mpt_softc *mpt)
@@ -457,16 +389,11 @@ mpt_pci_attach(device_t dev)
 		/* Print INFO level (if any) if bootverbose is set */
 		mpt->verbose += (bootverbose != 0)? 1 : 0;
 	}
-	/* Make sure memory access decoders are enabled */
-	cmd = pci_read_config(dev, PCIR_COMMAND, 2);
-	if ((cmd & PCIM_CMD_MEMEN) == 0) {
-		device_printf(dev, "Memory accesses disabled");
-		return (ENXIO);
-	}
 
 	/*
 	 * Make sure that SERR, PERR, WRITE INVALIDATE and BUSMASTER are set.
 	 */
+	cmd = pci_read_config(dev, PCIR_COMMAND, 2);
 	cmd |=
 	    PCIM_CMD_SERRESPEN | PCIM_CMD_PERRESPEN |
 	    PCIM_CMD_BUSMASTEREN | PCIM_CMD_MWRICEN;
@@ -631,7 +558,7 @@ mpt_pci_attach(device_t dev)
 	}
 
 	mpt->eh = EVENTHANDLER_REGISTER(shutdown_post_sync, mpt_pci_shutdown,
-	    dev, SHUTDOWN_PRI_DEFAULT);
+	    dev, SHUTDOWN_PRI_LAST);
 
 	if (mpt->eh == NULL) {
 		mpt_prt(mpt, "shutdown event registration failed\n");

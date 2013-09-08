@@ -175,9 +175,7 @@ ipfw_add_rule(struct ip_fw_chain *chain, struct ip_fw *input_rule)
 	/* clear fields not settable from userland */
 	rule->x_next = NULL;
 	rule->next_rule = NULL;
-	rule->pcnt = 0;
-	rule->bcnt = 0;
-	rule->timestamp = 0;
+	IPFW_ZERO_RULE_COUNTER(rule);
 
 	if (V_autoinc_step < 1)
 		V_autoinc_step = 1;
@@ -375,14 +373,15 @@ del_entry(struct ip_fw_chain *chain, uint32_t arg)
 		/* 4. swap the maps (under BH_LOCK) */
 		map = swap_map(chain, map, chain->n_rules - n);
 		/* 5. now remove the rules deleted from the old map */
+		if (cmd == 1)
+			ipfw_expire_dyn_rules(chain, NULL, new_set);
 		for (i = start; i < end; i++) {
-			int l;
 			rule = map[i];
 			if (keep_rule(rule, cmd, new_set, num))
 				continue;
-			l = RULESIZE(rule);
-			chain->static_len -= l;
-			ipfw_remove_dyn_children(rule);
+			chain->static_len -= RULESIZE(rule);
+			if (cmd != 1)
+				ipfw_expire_dyn_rules(chain, rule, RESVD_SET);
 			rule->x_next = chain->reap;
 			chain->reap = rule;
 		}
@@ -439,10 +438,8 @@ clear_counters(struct ip_fw *rule, int log_only)
 {
 	ipfw_insn_log *l = (ipfw_insn_log *)ACTION_PTR(rule);
 
-	if (log_only == 0) {
-		rule->bcnt = rule->pcnt = 0;
-		rule->timestamp = 0;
-	}
+	if (log_only == 0)
+		IPFW_ZERO_RULE_COUNTER(rule);
 	if (l->o.opcode == O_LOG)
 		l->log_left = l->max_log;
 }
@@ -682,6 +679,11 @@ check_ipfw_struct(struct ip_fw *rule, int size)
 				goto bad_size;
 			break;
 
+		case O_DSCP:
+			if (cmdlen != F_INSN_SIZE(ipfw_insn_u32) + 1)
+				goto bad_size;
+			break;
+
 		case O_MAC_TYPE:
 		case O_IP_SRCPORT:
 		case O_IP_DSTPORT: /* XXX artificial limit, 30 port pairs */
@@ -708,23 +710,14 @@ check_ipfw_struct(struct ip_fw *rule, int size)
 			goto check_action;
 
 		case O_FORWARD_IP:
-#ifdef	IPFIREWALL_FORWARD
 			if (cmdlen != F_INSN_SIZE(ipfw_insn_sa))
 				goto bad_size;
 			goto check_action;
-#else
-			return EINVAL;
-#endif
-
 #ifdef INET6
 		case O_FORWARD_IP6:
-#ifdef IPFIREWALL_FORWARD
 			if (cmdlen != F_INSN_SIZE(ipfw_insn_sa6))
 				goto bad_size;
 			goto check_action;
-#else
-			return (EINVAL);
-#endif
 #endif /* INET6 */
 
 		case O_DIVERT:
@@ -751,6 +744,7 @@ check_ipfw_struct(struct ip_fw *rule, int size)
 		case O_ACCEPT:
 		case O_DENY:
 		case O_REJECT:
+		case O_SETDSCP:
 #ifdef INET6
 		case O_UNREACH6:
 #endif
@@ -934,7 +928,7 @@ ipfw_getrules(struct ip_fw_chain *chain, void *buf, size_t space)
 			dst->timestamp += boot_seconds;
 		bp += l;
 	}
-	ipfw_get_dynamic(&bp, ep); /* protected by the dynamic lock */
+	ipfw_get_dynamic(chain, &bp, ep); /* protected by the dynamic lock */
 	return (bp - (char *)buf);
 }
 

@@ -431,7 +431,7 @@ call_again:
 send_again:
 	mtx_unlock(&cs->cs_lock);
 
-	MGETHDR(mreq, M_WAIT, MT_DATA);
+	mreq = m_gethdr(M_WAITOK, MT_DATA);
 	KASSERT(cu->cu_mcalllen <= MHLEN, ("RPC header too big"));
 	bcopy(cu->cu_mcallc, mreq->m_data, cu->cu_mcalllen);
 	mreq->m_len = cu->cu_mcalllen;
@@ -682,6 +682,7 @@ get_reply:
 			next_sendtime += retransmit_time;
 			goto send_again;
 		}
+		cu->cu_sent += CWNDSCALE;
 		TAILQ_INSERT_TAIL(&cs->cs_pending, cr, cr_link);
 	}
 
@@ -733,6 +734,7 @@ got_reply:
 					 */
 					XDR_DESTROY(&xdrs);
 					mtx_lock(&cs->cs_lock);
+					cu->cu_sent += CWNDSCALE;
 					TAILQ_INSERT_TAIL(&cs->cs_pending,
 					    cr, cr_link);
 					cr->cr_mrep = NULL;

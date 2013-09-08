@@ -124,7 +124,8 @@ g_raid_tr_update_state_concat(struct g_raid_volume *vol)
 		 * Some metadata modules may not know CONCAT volume
 		 * mediasize until all disks connected. Recalculate.
 		 */
-		if (G_RAID_VOLUME_S_ALIVE(s) &&
+		if (vol->v_raid_level == G_RAID_VOLUME_RL_CONCAT &&
+		    G_RAID_VOLUME_S_ALIVE(s) &&
 		    !G_RAID_VOLUME_S_ALIVE(vol->v_state)) {
 			size = 0;
 			for (i = 0; i < vol->v_disks_count; i++) {
@@ -248,7 +249,8 @@ g_raid_tr_iostart_concat(struct g_raid_tr_object *tr, struct bio *bp)
 		cbp->bio_caller1 = sd;
 		bioq_insert_tail(&queue, cbp);
 		remain -= length;
-		addr += length;
+		if (bp->bio_cmd != BIO_DELETE)
+			addr += length;
 		offset = 0;
 		no++;
 		KASSERT(no < vol->v_disks_count || remain == 0,

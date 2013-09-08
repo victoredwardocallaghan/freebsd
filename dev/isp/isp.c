@@ -1709,7 +1709,13 @@ isp_fibre_init(ispsoftc_t *isp)
 	 *
 	 * NB: for the 2300, ICBOPT_EXTENDED is required.
 	 */
-	if (IS_2200(isp) || IS_23XX(isp)) {
+	if (IS_2100(isp)) {
+		/*
+		 * We can't have Fast Posting any more- we now
+		 * have 32 bit handles.
+		 */
+		icbp->icb_fwoptions &= ~ICBOPT_FAST_POST;
+	} else if (IS_2200(isp) || IS_23XX(isp)) {
 		icbp->icb_fwoptions |= ICBOPT_EXTENDED;
 
 		icbp->icb_xfwoptions = fcp->isp_xfwoptions;
@@ -2583,7 +2589,7 @@ isp_get_wwn(ispsoftc_t *isp, int chan, int loopid, int nodename)
 		}
 		mbs.param[9] = chan;
 	} else {
-		mbs.ibits = 3;
+		mbs.ibitm = 3;
 		mbs.param[1] = loopid << 8;
 		if (nodename) {
 			mbs.param[1] |= 1;
@@ -7356,6 +7362,13 @@ isp_mboxcmd(ispsoftc_t *isp, mbreg_t *mbp)
 	 */
 	ibits |= mbp->ibits;
 	obits |= mbp->obits;
+
+	/*
+	 * Mask any bits that the caller wants us to mask
+	 */
+	ibits &= mbp->ibitm;
+	obits &= mbp->obitm;
+
 
 	if (ibits == 0 && obits == 0) {
 		mbp->param[0] = MBOX_COMMAND_PARAM_ERROR;

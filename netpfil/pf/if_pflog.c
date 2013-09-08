@@ -1,5 +1,4 @@
-/*	$OpenBSD: if_pflog.c,v 1.26 2007/10/18 21:58:18 mpf Exp $	*/
-/*
+/*-
  * The authors of this code are John Ioannidis (ji@tla.org),
  * Angelos D. Keromytis (kermit@csd.uch.gr) and
  * Niels Provos (provos@physnet.uni-hamburg.de).
@@ -31,6 +30,8 @@
  * REPRESENTATION OR WARRANTY OF ANY KIND CONCERNING THE
  * MERCHANTABILITY OF THIS SOFTWARE OR ITS FITNESS FOR ANY PARTICULAR
  * PURPOSE.
+ *
+ *	$OpenBSD: if_pflog.c,v 1.26 2007/10/18 21:58:18 mpf Exp $
  */
 
 #include <sys/cdefs.h>
@@ -81,15 +82,16 @@ __FBSDID("$FreeBSD$");
 #define DPRINTF(x)
 #endif
 
-static int	pflogoutput(struct ifnet *, struct mbuf *, struct sockaddr *,
-		    struct route *);
+static int	pflogoutput(struct ifnet *, struct mbuf *,
+		    const struct sockaddr *, struct route *);
 static void	pflogattach(int);
 static int	pflogioctl(struct ifnet *, u_long, caddr_t);
 static void	pflogstart(struct ifnet *);
 static int	pflog_clone_create(struct if_clone *, int, caddr_t);
 static void	pflog_clone_destroy(struct ifnet *);
+static struct if_clone *pflog_cloner;
 
-IFC_SIMPLE_DECLARE(pflog, 1);
+static const char pflogname[] = "pflog";
 
 struct ifnet	*pflogifs[PFLOGIFS_MAX];	/* for fast access */
 
@@ -99,7 +101,8 @@ pflogattach(int npflog)
 	int	i;
 	for (i = 0; i < PFLOGIFS_MAX; i++)
 		pflogifs[i] = NULL;
-	if_clone_attach(&pflog_cloner);
+	pflog_cloner = if_clone_simple(pflogname, pflog_clone_create,
+	    pflog_clone_destroy, 1);
 }
 
 static int
@@ -114,7 +117,7 @@ pflog_clone_create(struct if_clone *ifc, int unit, caddr_t param)
 	if (ifp == NULL) {
 		return (ENOSPC);
 	}
-	if_initname(ifp, ifc->ifc_name, unit);
+	if_initname(ifp, pflogname, unit);
 	ifp->if_mtu = PFLOGMTU;
 	ifp->if_ioctl = pflogioctl;
 	ifp->if_output = pflogoutput;
@@ -166,7 +169,7 @@ pflogstart(struct ifnet *ifp)
 }
 
 static int
-pflogoutput(struct ifnet *ifp, struct mbuf *m, struct sockaddr *dst,
+pflogoutput(struct ifnet *ifp, struct mbuf *m, const struct sockaddr *dst,
 	struct route *rt)
 {
 	m_freem(m);
@@ -271,7 +274,7 @@ pflog_modevent(module_t mod, int type, void *data)
 		PF_RULES_WLOCK();
 		pflog_packet_ptr = NULL;
 		PF_RULES_WUNLOCK();
-		if_clone_detach(&pflog_cloner);
+		if_clone_detach(pflog_cloner);
 		break;
 	default:
 		error = EINVAL;
@@ -281,7 +284,7 @@ pflog_modevent(module_t mod, int type, void *data)
 	return error;
 }
 
-static moduledata_t pflog_mod = { "pflog", pflog_modevent, 0 };
+static moduledata_t pflog_mod = { pflogname, pflog_modevent, 0 };
 
 #define PFLOG_MODVER 1
 

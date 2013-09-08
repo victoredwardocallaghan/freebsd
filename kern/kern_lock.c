@@ -35,6 +35,7 @@
 __FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
+#include <sys/kdb.h>
 #include <sys/ktr.h>
 #include <sys/lock.h>
 #include <sys/lock_profile.h>
@@ -237,8 +238,6 @@ wakeupshlk(struct lock *lk, const char *file, int line)
 	u_int realexslp;
 	int queue, wakeup_swapper;
 
-	TD_LOCKS_DEC(curthread);
-	TD_SLOCKS_DEC(curthread);
 	WITNESS_UNLOCK(&lk->lock_object, 0, file, line);
 	LOCK_LOG_LOCK("SUNLOCK", &lk->lock_object, 0, 0, file, line);
 
@@ -338,6 +337,8 @@ wakeupshlk(struct lock *lk, const char *file, int line)
 	}
 
 	lock_profile_release_lock(&lk->lock_object);
+	TD_LOCKS_DEC(curthread);
+	TD_SLOCKS_DEC(curthread);
 	return (wakeup_swapper);
 }
 
@@ -392,14 +393,16 @@ lockinit(struct lock *lk, int pri, const char *wmesg, int timo, int flags)
 		iflags |= LO_WITNESS;
 	if (flags & LK_QUIET)
 		iflags |= LO_QUIET;
+	if (flags & LK_IS_VNODE)
+		iflags |= LO_IS_VNODE;
 	iflags |= flags & (LK_ADAPTIVE | LK_NOSHARE);
 
+	lock_init(&lk->lock_object, &lock_class_lockmgr, wmesg, NULL, iflags);
 	lk->lk_lock = LK_UNLOCKED;
 	lk->lk_recurse = 0;
 	lk->lk_exslpfail = 0;
 	lk->lk_timo = timo;
 	lk->lk_pri = pri;
-	lock_init(&lk->lock_object, &lock_class_lockmgr, wmesg, NULL, iflags);
 	STACK_ZERO(lk);
 }
 
@@ -477,7 +480,7 @@ __lockmgr_args(struct lock *lk, u_int flags, struct lock_object *ilk,
 	KASSERT((flags & LK_INTERLOCK) == 0 || ilk != NULL,
 	    ("%s: LK_INTERLOCK passed without valid interlock @ %s:%d",
 	    __func__, file, line));
-	KASSERT(!TD_IS_IDLETHREAD(curthread),
+	KASSERT(kdb_active != 0 || !TD_IS_IDLETHREAD(curthread),
 	    ("%s: idle thread %p on lockmgr %s @ %s:%d", __func__, curthread,
 	    lk->lock_object.lo_name, file, line));
 
@@ -497,6 +500,8 @@ __lockmgr_args(struct lock *lk, u_int flags, struct lock_object *ilk,
 		case LK_DOWNGRADE:
 			_lockmgr_assert(lk, KA_XLOCKED | KA_NOTRECURSED,
 			    file, line);
+			if (flags & LK_INTERLOCK)
+				class->lc_unlock(ilk);
 			return (0);
 		}
 	}
@@ -506,7 +511,7 @@ __lockmgr_args(struct lock *lk, u_int flags, struct lock_object *ilk,
 	case LK_SHARED:
 		if (LK_CAN_WITNESS(flags))
 			WITNESS_CHECKORDER(&lk->lock_object, LOP_NEWORDER,
-			    file, line, ilk);
+			    file, line, flags & LK_INTERLOCK ? ilk : NULL);
 		for (;;) {
 			x = lk->lk_lock;
 
@@ -718,7 +723,8 @@ __lockmgr_args(struct lock *lk, u_int flags, struct lock_object *ilk,
 	case LK_EXCLUSIVE:
 		if (LK_CAN_WITNESS(flags))
 			WITNESS_CHECKORDER(&lk->lock_object, LOP_NEWORDER |
-			    LOP_EXCLUSIVE, file, line, ilk);
+			    LOP_EXCLUSIVE, file, line, flags & LK_INTERLOCK ?
+			    ilk : NULL);
 
 		/*
 		 * If curthread already holds the lock and this one is
@@ -934,9 +940,19 @@ __lockmgr_args(struct lock *lk, u_int flags, struct lock_object *ilk,
 		}
 		break;
 	case LK_DOWNGRADE:
-		_lockmgr_assert(lk, KA_XLOCKED | KA_NOTRECURSED, file, line);
+		_lockmgr_assert(lk, KA_XLOCKED, file, line);
 		LOCK_LOG_LOCK("XDOWNGRADE", &lk->lock_object, 0, 0, file, line);
 		WITNESS_DOWNGRADE(&lk->lock_object, 0, file, line);
+
+		/*
+		 * Panic if the lock is recursed.
+		 */
+		if (lockmgr_xlocked(lk) && lockmgr_recursed(lk)) {
+			if (flags & LK_INTERLOCK)
+				class->lc_unlock(ilk);
+			panic("%s: downgrade a recursed lockmgr %s @ %s:%d\n",
+			    __func__, iwmesg, file, line);
+		}
 		TD_SLOCKS_INC(curthread);
 
 		/*
@@ -1057,7 +1073,8 @@ __lockmgr_args(struct lock *lk, u_int flags, struct lock_object *ilk,
 	case LK_DRAIN:
 		if (LK_CAN_WITNESS(flags))
 			WITNESS_CHECKORDER(&lk->lock_object, LOP_NEWORDER |
-			    LOP_EXCLUSIVE, file, line, ilk);
+			    LOP_EXCLUSIVE, file, line, flags & LK_INTERLOCK ?
+			    ilk : NULL);
 
 		/*
 		 * Trying to drain a lock we already own will result in a
@@ -1254,7 +1271,14 @@ _lockmgr_disown(struct lock *lk, const char *file, int line)
 		return;
 
 	tid = (uintptr_t)curthread;
-	_lockmgr_assert(lk, KA_XLOCKED | KA_NOTRECURSED, file, line);
+	_lockmgr_assert(lk, KA_XLOCKED, file, line);
+
+	/*
+	 * Panic if the lock is recursed.
+	 */
+	if (lockmgr_xlocked(lk) && lockmgr_recursed(lk))
+		panic("%s: disown a recursed lockmgr @ %s:%d\n",
+		    __func__,  file, line);
 
 	/*
 	 * If the owner is already LK_KERNPROC just skip the whole operation.

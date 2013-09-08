@@ -48,6 +48,7 @@
 #include <sys/socket.h>
 #include <sys/sockio.h>
 #include <sys/sysctl.h>
+#include <sys/uuid.h>
 
 #include <net/if.h>
 #include <net/if_arp.h>
@@ -83,7 +84,7 @@
 
 int (*ef_inputp)(struct ifnet*, struct ether_header *eh, struct mbuf *m);
 int (*ef_outputp)(struct ifnet *ifp, struct mbuf **mp,
-		struct sockaddr *dst, short *tp, int *hlen);
+		const struct sockaddr *dst, short *tp, int *hlen);
 
 #ifdef NETATALK
 #include <netatalk/at.h>
@@ -141,6 +142,22 @@ static MALLOC_DEFINE(M_ARPCOM, "arpcom", "802.* interface internals");
 
 #define senderr(e) do { error = (e); goto bad;} while (0)
 
+static void
+update_mbuf_csumflags(struct mbuf *src, struct mbuf *dst)
+{
+	int csum_flags = 0;
+
+	if (src->m_pkthdr.csum_flags & CSUM_IP)
+		csum_flags |= (CSUM_IP_CHECKED|CSUM_IP_VALID);
+	if (src->m_pkthdr.csum_flags & CSUM_DELAY_DATA)
+		csum_flags |= (CSUM_DATA_VALID|CSUM_PSEUDO_HDR);
+	if (src->m_pkthdr.csum_flags & CSUM_SCTP)
+		csum_flags |= CSUM_SCTP_VALID;
+	dst->m_pkthdr.csum_flags |= csum_flags;
+	if (csum_flags & CSUM_DATA_VALID)
+		dst->m_pkthdr.csum_data = 0xffff;
+}
+
 /*
  * Ethernet output routine.
  * Encapsulate a packet of type family for the local net.
@@ -149,7 +166,7 @@ static MALLOC_DEFINE(M_ARPCOM, "arpcom", "802.* interface internals");
  */
 int
 ether_output(struct ifnet *ifp, struct mbuf *m,
-	struct sockaddr *dst, struct route *ro)
+	const struct sockaddr *dst, struct route *ro)
 {
 	short type;
 	int error = 0, hdrcmplt = 0;
@@ -238,8 +255,8 @@ ether_output(struct ifnet *ifp, struct mbuf *m,
 			goto bad;
 		} else
 		    type = htons(ETHERTYPE_IPX);
-		bcopy((caddr_t)&(((struct sockaddr_ipx *)dst)->sipx_addr.x_host),
-		    (caddr_t)edst, sizeof (edst));
+		bcopy(&((const struct sockaddr_ipx *)dst)->sipx_addr.x_host,
+		    edst, sizeof (edst));
 		break;
 #endif
 #ifdef NETATALK
@@ -247,9 +264,9 @@ ether_output(struct ifnet *ifp, struct mbuf *m,
 	  {
 	    struct at_ifaddr *aa;
 
-	    if ((aa = at_ifawithnet((struct sockaddr_at *)dst)) == NULL)
+	    if ((aa = at_ifawithnet((const struct sockaddr_at *)dst)) == NULL)
 		    senderr(EHOSTUNREACH); /* XXX */
-	    if (!aarpresolve(ifp, m, (struct sockaddr_at *)dst, edst)) {
+	    if (!aarpresolve(ifp, m, (const struct sockaddr_at *)dst, edst)) {
 		    ifa_free(&aa->aa_ifa);
 		    return (0);
 	    }
@@ -260,7 +277,7 @@ ether_output(struct ifnet *ifp, struct mbuf *m,
 		struct llc llc;
 
 		ifa_free(&aa->aa_ifa);
-		M_PREPEND(m, LLC_SNAPFRAMELEN, M_DONTWAIT);
+		M_PREPEND(m, LLC_SNAPFRAMELEN, M_NOWAIT);
 		if (m == NULL)
 			senderr(ENOBUFS);
 		llc.llc_dsap = llc.llc_ssap = LLC_SNAP_LSAP;
@@ -279,33 +296,28 @@ ether_output(struct ifnet *ifp, struct mbuf *m,
 #endif /* NETATALK */
 
 	case pseudo_AF_HDRCMPLT:
+	    {
+		const struct ether_header *eh;
+		
 		hdrcmplt = 1;
-		eh = (struct ether_header *)dst->sa_data;
+		eh = (const struct ether_header *)dst->sa_data;
 		(void)memcpy(esrc, eh->ether_shost, sizeof (esrc));
 		/* FALLTHROUGH */
 
 	case AF_UNSPEC:
 		loop_copy = 0; /* if this is for us, don't do it */
-		eh = (struct ether_header *)dst->sa_data;
+		eh = (const struct ether_header *)dst->sa_data;
 		(void)memcpy(edst, eh->ether_dhost, sizeof (edst));
 		type = eh->ether_type;
 		break;
-
+            }
 	default:
 		if_printf(ifp, "can't handle af%d\n", dst->sa_family);
 		senderr(EAFNOSUPPORT);
 	}
 
 	if (lle != NULL && (lle->la_flags & LLE_IFADDR)) {
-		int csum_flags = 0;
-		if (m->m_pkthdr.csum_flags & CSUM_IP)
-			csum_flags |= (CSUM_IP_CHECKED|CSUM_IP_VALID);
-		if (m->m_pkthdr.csum_flags & CSUM_DELAY_DATA)
-			csum_flags |= (CSUM_DATA_VALID|CSUM_PSEUDO_HDR);
-		if (m->m_pkthdr.csum_flags & CSUM_SCTP)
-			csum_flags |= CSUM_SCTP_VALID;
-		m->m_pkthdr.csum_flags |= csum_flags;
-		m->m_pkthdr.csum_data = 0xffff;
+		update_mbuf_csumflags(m, m);
 		return (if_simloop(ifp, m, dst->sa_family, 0));
 	}
 
@@ -313,7 +325,7 @@ ether_output(struct ifnet *ifp, struct mbuf *m,
 	 * Add local net header.  If no space in first mbuf,
 	 * allocate another.
 	 */
-	M_PREPEND(m, ETHER_HDR_LEN, M_DONTWAIT);
+	M_PREPEND(m, ETHER_HDR_LEN, M_NOWAIT);
 	if (m == NULL)
 		senderr(ENOBUFS);
 	eh = mtod(m, struct ether_header *);
@@ -338,15 +350,6 @@ ether_output(struct ifnet *ifp, struct mbuf *m,
 	 */
 	if ((ifp->if_flags & IFF_SIMPLEX) && loop_copy &&
 	    ((t = pf_find_mtag(m)) == NULL || !t->routed)) {
-		int csum_flags = 0;
-
-		if (m->m_pkthdr.csum_flags & CSUM_IP)
-			csum_flags |= (CSUM_IP_CHECKED|CSUM_IP_VALID);
-		if (m->m_pkthdr.csum_flags & CSUM_DELAY_DATA)
-			csum_flags |= (CSUM_DATA_VALID|CSUM_PSEUDO_HDR);
-		if (m->m_pkthdr.csum_flags & CSUM_SCTP)
-			csum_flags |= CSUM_SCTP_VALID;
-
 		if (m->m_flags & M_BCAST) {
 			struct mbuf *n;
 
@@ -362,18 +365,14 @@ ether_output(struct ifnet *ifp, struct mbuf *m,
 			 * often used kernel parts suffer from the same bug.
 			 * See PR kern/105943 for a proposed general solution.
 			 */
-			if ((n = m_dup(m, M_DONTWAIT)) != NULL) {
-				n->m_pkthdr.csum_flags |= csum_flags;
-				if (csum_flags & CSUM_DATA_VALID)
-					n->m_pkthdr.csum_data = 0xffff;
+			if ((n = m_dup(m, M_NOWAIT)) != NULL) {
+				update_mbuf_csumflags(m, n);
 				(void)if_simloop(ifp, n, dst->sa_family, hlen);
 			} else
 				ifp->if_iqdrops++;
 		} else if (bcmp(eh->ether_dhost, eh->ether_shost,
 				ETHER_ADDR_LEN) == 0) {
-			m->m_pkthdr.csum_flags |= csum_flags;
-			if (csum_flags & CSUM_DATA_VALID)
-				m->m_pkthdr.csum_data = 0xffff;
+			update_mbuf_csumflags(m, m);
 			(void) if_simloop(ifp, m, dst->sa_family, hlen);
 			return (0);	/* XXX */
 		}
@@ -578,6 +577,7 @@ ether_input_internal(struct ifnet *ifp, struct mbuf *m)
 		bcopy((char *)evl, (char *)evl + ETHER_VLAN_ENCAP_LEN,
 		    ETHER_HDR_LEN - ETHER_TYPE_LEN);
 		m_adj(m, ETHER_VLAN_ENCAP_LEN);
+		eh = mtod(m, struct ether_header *);
 	}
 
 	M_SETFIB(m, ifp->if_fib);
@@ -592,6 +592,7 @@ ether_input_internal(struct ifnet *ifp, struct mbuf *m)
 			CURVNET_RESTORE();
 			return;
 		}
+		eh = mtod(m, struct ether_header *);
 	}
 
 	/*
@@ -606,6 +607,7 @@ ether_input_internal(struct ifnet *ifp, struct mbuf *m)
 			CURVNET_RESTORE();
 			return;
 		}
+		eh = mtod(m, struct ether_header *);
 	}
 
 #if defined(INET) || defined(INET6)
@@ -636,9 +638,8 @@ ether_input_internal(struct ifnet *ifp, struct mbuf *m)
 			m->m_flags |= M_PROMISC;
 	}
 
-	/* First chunk of an mbuf contains good entropy */
 	if (harvest.ethernet)
-		random_harvest(m, 16, 3, 0, RANDOM_NET);
+		random_harvest(&(m->m_data), 12, 3, 0, RANDOM_NET_ETHER);
 
 	ether_demux(ifp, m);
 	CURVNET_RESTORE();
@@ -772,7 +773,7 @@ ether_demux(struct ifnet *ifp, struct mbuf *m)
 	 * Strip off Ethernet header.
 	 */
 	m->m_flags &= ~M_VLANTAG;
-	m->m_flags &= ~(M_PROTOFLAGS);
+	m_clrprotoflags(m);
 	m_adj(m, ETHER_HDR_LEN);
 
 	/*
@@ -861,7 +862,7 @@ discard:
 		 * Put back the ethernet header so netgraph has a
 		 * consistent view of inbound packets.
 		 */
-		M_PREPEND(m, ETHER_HDR_LEN, M_DONTWAIT);
+		M_PREPEND(m, ETHER_HDR_LEN, M_NOWAIT);
 		(*ng_ether_input_orphan_p)(ifp, m);
 		return;
 	}
@@ -925,6 +926,8 @@ ether_ifattach(struct ifnet *ifp, const u_int8_t *lla)
 			break; 
 	if (i != ifp->if_addrlen)
 		if_printf(ifp, "Ethernet address: %6D\n", lla, ":");
+
+	uuid_ether_add(LLADDR(sdl));
 }
 
 /*
@@ -933,6 +936,11 @@ ether_ifattach(struct ifnet *ifp, const u_int8_t *lla)
 void
 ether_ifdetach(struct ifnet *ifp)
 {
+	struct sockaddr_dl *sdl;
+
+	sdl = (struct sockaddr_dl *)(ifp->if_addr->ifa_addr);
+	uuid_ether_del(LLADDR(sdl));
+
 	if (IFP2AC(ifp)->ac_netgraph != NULL) {
 		KASSERT(ng_ether_detach_p != NULL,
 		    ("ng_ether_detach_p is NULL"));
@@ -1285,7 +1293,7 @@ ether_vlanencap(struct mbuf *m, uint16_t tag)
 {
 	struct ether_vlan_header *evl;
 
-	M_PREPEND(m, ETHER_VLAN_ENCAP_LEN, M_DONTWAIT);
+	M_PREPEND(m, ETHER_VLAN_ENCAP_LEN, M_NOWAIT);
 	if (m == NULL)
 		return (NULL);
 	/* M_PREPEND takes care of m_len, m_pkthdr.len for us */

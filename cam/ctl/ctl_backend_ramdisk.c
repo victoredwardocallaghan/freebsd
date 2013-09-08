@@ -134,7 +134,7 @@ ctl_backend_ramdisk_init(void)
 {
 	struct ctl_be_ramdisk_softc *softc;
 #ifdef CTL_RAMDISK_PAGES
-	int i, j;
+	int i;
 #endif
 
 
@@ -151,17 +151,8 @@ ctl_backend_ramdisk_init(void)
 	softc->ramdisk_pages = (uint8_t **)malloc(sizeof(uint8_t *) *
 						  softc->num_pages, M_RAMDISK,
 						  M_WAITOK);
-	for (i = 0; i < softc->num_pages; i++) {
+	for (i = 0; i < softc->num_pages; i++)
 		softc->ramdisk_pages[i] = malloc(PAGE_SIZE, M_RAMDISK,M_WAITOK);
-		if (softc->ramdisk_pages[i] == NULL) {
-			for (j = 0; j < i; j++) {
-				free(softc->ramdisk_pages[j], M_RAMDISK);
-			}
-			free(softc->ramdisk_pages, M_RAMDISK);
-			panic("RAMDisk initialization failed\n");
-			return (1); /* NOTREACHED */
-		}
-	}
 #else
 	softc->ramdisk_buffer = (uint8_t *)malloc(softc->rd_size, M_RAMDISK,
 						  M_WAITOK);
@@ -313,13 +304,6 @@ ctl_backend_ramdisk_submit(union ctl_io *io)
 		io->scsiio.kern_data_ptr = malloc(sizeof(struct ctl_sg_entry) *
 						  num_sg_entries, M_RAMDISK,
 						  M_WAITOK);
-		if (io->scsiio.kern_data_ptr == NULL) {
-			ctl_set_internal_failure(&io->scsiio,
-						 /*sks_valid*/ 0,
-						 /*retry_count*/ 0);
-			ctl_done(io);
-			return (CTL_RETVAL_COMPLETE);
-		}
 		sg_entries = (struct ctl_sg_entry *)io->scsiio.kern_data_ptr;
 		for (i = 0, len_filled = 0; i < num_sg_entries;
 		     i++, len_filled += PAGE_SIZE) {
@@ -457,6 +441,9 @@ ctl_backend_ramdisk_rm(struct ctl_be_ramdisk_softc *softc,
 		snprintf(req->error_str, sizeof(req->error_str),
 			 "%s: error %d returned from ctl_invalidate_lun() for "
 			 "LUN %d", __func__, retval, params->lun_id);
+		mtx_lock(&softc->lock);
+		be_lun->flags &= ~CTL_BE_RAMDISK_LUN_WAITING;
+		mtx_unlock(&softc->lock);
 		goto bailout_error;
 	}
 
@@ -491,14 +478,6 @@ ctl_backend_ramdisk_rm(struct ctl_be_ramdisk_softc *softc,
 	return (retval);
 
 bailout_error:
-
-	/*
-	 * Don't leave the waiting flag set.
-	 */
-	mtx_lock(&softc->lock);
-	be_lun->flags &= ~CTL_BE_RAMDISK_LUN_WAITING;
-	mtx_unlock(&softc->lock);
-
 	req->status = CTL_LUN_ERROR;
 
 	return (0);
@@ -512,7 +491,7 @@ ctl_backend_ramdisk_create(struct ctl_be_ramdisk_softc *softc,
 	struct ctl_lun_create_params *params;
 	uint32_t blocksize;
 	char tmpstr[32];
-	int retval;
+	int i, retval;
 
 	retval = 0;
 	params = &req->reqdata.create;
@@ -530,6 +509,7 @@ ctl_backend_ramdisk_create(struct ctl_be_ramdisk_softc *softc,
 			 sizeof(*be_lun));
 		goto bailout_error;
 	}
+	STAILQ_INIT(&be_lun->ctl_be_lun.options);
 
 	if (params->flags & CTL_LUN_FLAG_DEV_TYPE)
 		be_lun->ctl_be_lun.lun_type = params->device_type;
@@ -565,6 +545,17 @@ ctl_backend_ramdisk_create(struct ctl_be_ramdisk_softc *softc,
 	params->lun_size_bytes = be_lun->size_bytes;
 
 	be_lun->softc = softc;
+
+	for (i = 0; i < req->num_be_args; i++) {
+		struct ctl_be_lun_option *opt;
+
+		opt = malloc(sizeof(*opt), M_RAMDISK, M_WAITOK);
+		opt->name = malloc(strlen(req->kern_be_args[i].kname) + 1, M_RAMDISK, M_WAITOK);
+		strcpy(opt->name, req->kern_be_args[i].kname);
+		opt->value = malloc(strlen(req->kern_be_args[i].kvalue) + 1, M_RAMDISK, M_WAITOK);
+		strcpy(opt->value, req->kern_be_args[i].kvalue);
+		STAILQ_INSERT_TAIL(&be_lun->ctl_be_lun.options, opt, links);
+	}
 
 	be_lun->flags = CTL_BE_RAMDISK_LUN_UNCONFIGURED;
 	be_lun->ctl_be_lun.flags = CTL_LUN_FLAG_PRIMARY;

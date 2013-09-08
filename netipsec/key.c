@@ -547,7 +547,6 @@ static const char *key_getfqdn __P((void));
 static const char *key_getuserfqdn __P((void));
 #endif
 static void key_sa_chgstate __P((struct secasvar *, u_int8_t));
-static struct mbuf *key_alloc_mbuf __P((int));
 
 static __inline void
 sa_initref(struct secasvar *sav)
@@ -1634,15 +1633,11 @@ key_sp2msg(sp)
 
 	tlen = key_getspreqmsglen(sp);
 
-	m = key_alloc_mbuf(tlen);
-	if (!m || m->m_next) {	/*XXX*/
-		if (m)
-			m_freem(m);
-		return NULL;
-	}
-
+	m = m_get2(tlen, M_NOWAIT, MT_DATA, 0);
+	if (m == NULL)
+		return (NULL);
+	m_align(m, tlen);
 	m->m_len = tlen;
-	m->m_next = NULL;
 	xpl = mtod(m, struct sadb_x_policy *);
 	bzero(xpl, tlen);
 
@@ -1723,7 +1718,7 @@ key_gather_mbuf(m, mhp, ndeep, nitem, va_alist)
 
 			IPSEC_ASSERT(len <= MHLEN, ("header too big %u", len));
 
-			MGETHDR(n, M_DONTWAIT, MT_DATA);
+			MGETHDR(n, M_NOWAIT, MT_DATA);
 			if (!n)
 				goto fail;
 			n->m_len = len;
@@ -1732,17 +1727,16 @@ key_gather_mbuf(m, mhp, ndeep, nitem, va_alist)
 			    mtod(n, caddr_t));
 		} else if (i < ndeep) {
 			len = mhp->extlen[idx];
-			n = key_alloc_mbuf(len);
-			if (!n || n->m_next) {	/*XXX*/
-				if (n)
-					m_freem(n);
+			n = m_get2(len, M_NOWAIT, MT_DATA, 0);
+			if (n == NULL)
 				goto fail;
-			}
+			m_align(n, len);
+			n->m_len = len;
 			m_copydata(m, mhp->extoff[idx], mhp->extlen[idx],
 			    mtod(n, caddr_t));
 		} else {
 			n = m_copym(m, mhp->extoff[idx], mhp->extlen[idx],
-			    M_DONTWAIT);
+			    M_NOWAIT);
 		}
 		if (n == NULL)
 			goto fail;
@@ -2200,9 +2194,9 @@ key_spddelete2(so, m, mhp)
 	/* create new sadb_msg to reply. */
 	len = PFKEY_ALIGN8(sizeof(struct sadb_msg));
 
-	MGETHDR(n, M_DONTWAIT, MT_DATA);
+	MGETHDR(n, M_NOWAIT, MT_DATA);
 	if (n && len > MHLEN) {
-		MCLGET(n, M_DONTWAIT);
+		MCLGET(n, M_NOWAIT);
 		if ((n->m_flags & M_EXT) == 0) {
 			m_freem(n);
 			n = NULL;
@@ -2222,7 +2216,7 @@ key_spddelete2(so, m, mhp)
 		off, len));
 
 	n->m_next = m_copym(m, mhp->extoff[SADB_X_EXT_POLICY],
-	    mhp->extlen[SADB_X_EXT_POLICY], M_DONTWAIT);
+	    mhp->extlen[SADB_X_EXT_POLICY], M_NOWAIT);
 	if (!n->m_next) {
 		m_freem(n);
 		return key_senderror(so, m, ENOBUFS);
@@ -2602,13 +2596,13 @@ key_spdexpire(sp)
 
 	/* create lifetime extension (current and hard) */
 	len = PFKEY_ALIGN8(sizeof(*lt)) * 2;
-	m = key_alloc_mbuf(len);
-	if (!m || m->m_next) {	/*XXX*/
-		if (m)
-			m_freem(m);
+	m = m_get2(len, M_NOWAIT, MT_DATA, 0);
+	if (m == NULL) {
 		error = ENOBUFS;
 		goto fail;
 	}
+	m_align(m, len);
+	m->m_len = len;
 	bzero(mtod(m, caddr_t), len);
 	lt = mtod(m, struct sadb_lifetime *);
 	lt->sadb_lifetime_len = PFKEY_UNIT64(sizeof(struct sadb_lifetime));
@@ -3562,9 +3556,9 @@ key_setsadbmsg(u_int8_t type, u_int16_t tlen, u_int8_t satype, u_int32_t seq,
 	len = PFKEY_ALIGN8(sizeof(struct sadb_msg));
 	if (len > MCLBYTES)
 		return NULL;
-	MGETHDR(m, M_DONTWAIT, MT_DATA);
+	MGETHDR(m, M_NOWAIT, MT_DATA);
 	if (m && len > MHLEN) {
-		MCLGET(m, M_DONTWAIT);
+		MCLGET(m, M_NOWAIT);
 		if ((m->m_flags & M_EXT) == 0) {
 			m_freem(m);
 			m = NULL;
@@ -3602,15 +3596,12 @@ key_setsadbsa(sav)
 	int len;
 
 	len = PFKEY_ALIGN8(sizeof(struct sadb_sa));
-	m = key_alloc_mbuf(len);
-	if (!m || m->m_next) {	/*XXX*/
-		if (m)
-			m_freem(m);
-		return NULL;
-	}
-
+	m = m_get2(len, M_NOWAIT, MT_DATA, 0);
+	if (m == NULL)
+		return (NULL);
+	m_align(m, len);
+	m->m_len = len;
 	p = mtod(m, struct sadb_sa *);
-
 	bzero(p, len);
 	p->sadb_sa_len = PFKEY_UNIT64(len);
 	p->sadb_sa_exttype = SADB_EXT_SA;
@@ -3636,13 +3627,11 @@ key_setsadbaddr(u_int16_t exttype, const struct sockaddr *saddr, u_int8_t prefix
 
 	len = PFKEY_ALIGN8(sizeof(struct sadb_address)) +
 	    PFKEY_ALIGN8(saddr->sa_len);
-	m = key_alloc_mbuf(len);
-	if (!m || m->m_next) {	/*XXX*/
-		if (m)
-			m_freem(m);
-		return NULL;
-	}
-
+	m = m_get2(len, M_NOWAIT, MT_DATA, 0);
+	if (m == NULL)
+		return (NULL);
+	m_align(m, len);
+	m->m_len = len;
 	p = mtod(m, struct sadb_address *);
 
 	bzero(p, len);
@@ -3682,13 +3671,11 @@ key_setsadbxsa2(u_int8_t mode, u_int32_t seq, u_int32_t reqid)
 	size_t len;
 
 	len = PFKEY_ALIGN8(sizeof(struct sadb_x_sa2));
-	m = key_alloc_mbuf(len);
-	if (!m || m->m_next) {	/*XXX*/
-		if (m)
-			m_freem(m);
-		return NULL;
-	}
-
+	m = m_get2(len, M_NOWAIT, MT_DATA, 0);
+	if (m == NULL)
+		return (NULL);
+	m_align(m, len);
+	m->m_len = len;
 	p = mtod(m, struct sadb_x_sa2 *);
 
 	bzero(p, len);
@@ -3716,13 +3703,11 @@ key_setsadbxtype(u_int16_t type)
 
 	len = PFKEY_ALIGN8(sizeof(struct sadb_x_nat_t_type));
 
-	m = key_alloc_mbuf(len);
-	if (!m || m->m_next) {	/*XXX*/
-		if (m)
-			m_freem(m);
+	m = m_get2(len, M_NOWAIT, MT_DATA, 0);
+	if (m == NULL)
 		return (NULL);
-	}
-
+	m_align(m, len);
+	m->m_len = len;
 	p = mtod(m, struct sadb_x_nat_t_type *);
 
 	bzero(p, len);
@@ -3745,13 +3730,11 @@ key_setsadbxport(u_int16_t port, u_int16_t type)
 
 	len = PFKEY_ALIGN8(sizeof(struct sadb_x_nat_t_port));
 
-	m = key_alloc_mbuf(len);
-	if (!m || m->m_next) {	/*XXX*/
-		if (m)
-			m_freem(m);
+	m = m_get2(len, M_NOWAIT, MT_DATA, 0);
+	if (m == NULL)
 		return (NULL);
-	}
-
+	m_align(m, len);
+	m->m_len = len;
 	p = mtod(m, struct sadb_x_nat_t_port *);
 
 	bzero(p, len);
@@ -3822,13 +3805,11 @@ key_setsadbxpolicy(u_int16_t type, u_int8_t dir, u_int32_t id)
 	size_t len;
 
 	len = PFKEY_ALIGN8(sizeof(struct sadb_x_policy));
-	m = key_alloc_mbuf(len);
-	if (!m || m->m_next) {	/*XXX*/
-		if (m)
-			m_freem(m);
-		return NULL;
-	}
-
+	m = m_get2(len, M_NOWAIT, MT_DATA, 0);
+	if (m == NULL)
+		return (NULL);
+	m_align(m, len);
+	m->m_len = len;
 	p = mtod(m, struct sadb_x_policy *);
 
 	bzero(p, len);
@@ -4823,9 +4804,9 @@ key_getspi(so, m, mhp)
 	len = PFKEY_ALIGN8(sizeof(struct sadb_msg)) +
 	    PFKEY_ALIGN8(sizeof(struct sadb_sa));
 
-	MGETHDR(n, M_DONTWAIT, MT_DATA);
+	MGETHDR(n, M_NOWAIT, MT_DATA);
 	if (len > MHLEN) {
-		MCLGET(n, M_DONTWAIT);
+		MCLGET(n, M_NOWAIT);
 		if ((n->m_flags & M_EXT) == 0) {
 			m_freem(n);
 			n = NULL;
@@ -6033,7 +6014,7 @@ key_getcomb_esp()
 		else {
 			IPSEC_ASSERT(l <= MLEN,
 				("l=%u > MLEN=%lu", l, (u_long) MLEN));
-			MGET(m, M_DONTWAIT, MT_DATA);
+			MGET(m, M_NOWAIT, MT_DATA);
 			if (m) {
 				M_ALIGN(m, l);
 				m->m_len = l;
@@ -6141,14 +6122,14 @@ key_getcomb_ah()
 		if (!m) {
 			IPSEC_ASSERT(l <= MLEN,
 				("l=%u > MLEN=%lu", l, (u_long) MLEN));
-			MGET(m, M_DONTWAIT, MT_DATA);
+			MGET(m, M_NOWAIT, MT_DATA);
 			if (m) {
 				M_ALIGN(m, l);
 				m->m_len = l;
 				m->m_next = NULL;
 			}
 		} else
-			M_PREPEND(m, l, M_DONTWAIT);
+			M_PREPEND(m, l, M_NOWAIT);
 		if (!m)
 			return NULL;
 
@@ -6185,14 +6166,14 @@ key_getcomb_ipcomp()
 		if (!m) {
 			IPSEC_ASSERT(l <= MLEN,
 				("l=%u > MLEN=%lu", l, (u_long) MLEN));
-			MGET(m, M_DONTWAIT, MT_DATA);
+			MGET(m, M_NOWAIT, MT_DATA);
 			if (m) {
 				M_ALIGN(m, l);
 				m->m_len = l;
 				m->m_next = NULL;
 			}
 		} else
-			M_PREPEND(m, l, M_DONTWAIT);
+			M_PREPEND(m, l, M_NOWAIT);
 		if (!m)
 			return NULL;
 
@@ -6236,7 +6217,7 @@ key_getprop(saidx)
 
 	if (!m)
 		return NULL;
-	M_PREPEND(m, l, M_DONTWAIT);
+	M_PREPEND(m, l, M_NOWAIT);
 	if (!m)
 		return NULL;
 
@@ -6794,9 +6775,9 @@ key_register(so, m, mhp)
 	if (len > MCLBYTES)
 		return key_senderror(so, m, ENOBUFS);
 
-	MGETHDR(n, M_DONTWAIT, MT_DATA);
+	MGETHDR(n, M_NOWAIT, MT_DATA);
 	if (len > MHLEN) {
-		MCLGET(n, M_DONTWAIT);
+		MCLGET(n, M_NOWAIT);
 		if ((n->m_flags & M_EXT) == 0) {
 			m_freem(n);
 			n = NULL;
@@ -6912,15 +6893,11 @@ key_freereg(struct socket *so)
 static int
 key_expire(struct secasvar *sav)
 {
-	int s;
 	int satype;
 	struct mbuf *result = NULL, *m;
 	int len;
 	int error = -1;
 	struct sadb_lifetime *lt;
-
-	/* XXX: Why do we lock ? */
-	s = splnet();	/*called from softclock()*/
 
 	IPSEC_ASSERT (sav != NULL, ("null sav"));
 	IPSEC_ASSERT (sav->sah != NULL, ("null sa header"));
@@ -6955,13 +6932,13 @@ key_expire(struct secasvar *sav)
 
 	/* create lifetime extension (current and soft) */
 	len = PFKEY_ALIGN8(sizeof(*lt)) * 2;
-	m = key_alloc_mbuf(len);
-	if (!m || m->m_next) {	/*XXX*/
-		if (m)
-			m_freem(m);
+	m = m_get2(len, M_NOWAIT, MT_DATA, 0);
+	if (m == NULL) {
 		error = ENOBUFS;
 		goto fail;
 	}
+	m_align(m, len);
+	m->m_len = len;
 	bzero(mtod(m, caddr_t), len);
 	lt = mtod(m, struct sadb_lifetime *);
 	lt->sadb_lifetime_len = PFKEY_UNIT64(sizeof(struct sadb_lifetime));
@@ -7023,13 +7000,11 @@ key_expire(struct secasvar *sav)
 	mtod(result, struct sadb_msg *)->sadb_msg_len =
 	    PFKEY_UNIT64(result->m_pkthdr.len);
 
-	splx(s);
 	return key_sendup_mbuf(NULL, result, KEY_SENDUP_REGISTERED);
 
  fail:
 	if (result)
 		m_freem(result);
-	splx(s);
 	return error;
 }
 
@@ -7341,7 +7316,7 @@ key_parse(m, so)
 	if ((m->m_flags & M_PKTHDR) == 0 ||
 	    m->m_pkthdr.len != m->m_pkthdr.len) {
 		ipseclog((LOG_DEBUG, "%s: invalid message length.\n",__func__));
-		V_pfkeystat.out_invlen++;
+		PFKEYSTAT_INC(out_invlen);
 		error = EINVAL;
 		goto senderror;
 	}
@@ -7349,7 +7324,7 @@ key_parse(m, so)
 	if (msg->sadb_msg_version != PF_KEY_V2) {
 		ipseclog((LOG_DEBUG, "%s: PF_KEY version %u is mismatched.\n",
 		    __func__, msg->sadb_msg_version));
-		V_pfkeystat.out_invver++;
+		PFKEYSTAT_INC(out_invver);
 		error = EINVAL;
 		goto senderror;
 	}
@@ -7357,7 +7332,7 @@ key_parse(m, so)
 	if (msg->sadb_msg_type > SADB_MAX) {
 		ipseclog((LOG_DEBUG, "%s: invalid type %u is passed.\n",
 		    __func__, msg->sadb_msg_type));
-		V_pfkeystat.out_invmsgtype++;
+		PFKEYSTAT_INC(out_invmsgtype);
 		error = EINVAL;
 		goto senderror;
 	}
@@ -7370,9 +7345,9 @@ key_parse(m, so)
 	if (m->m_next) {
 		struct mbuf *n;
 
-		MGETHDR(n, M_DONTWAIT, MT_DATA);
+		MGETHDR(n, M_NOWAIT, MT_DATA);
 		if (n && m->m_pkthdr.len > MHLEN) {
-			MCLGET(n, M_DONTWAIT);
+			MCLGET(n, M_NOWAIT);
 			if ((n->m_flags & M_EXT) == 0) {
 				m_free(n);
 				n = NULL;
@@ -7410,7 +7385,7 @@ key_parse(m, so)
 			ipseclog((LOG_DEBUG, "%s: must specify satype "
 			    "when msg type=%u.\n", __func__,
 			    msg->sadb_msg_type));
-			V_pfkeystat.out_invsatype++;
+			PFKEYSTAT_INC(out_invsatype);
 			error = EINVAL;
 			goto senderror;
 		}
@@ -7430,7 +7405,7 @@ key_parse(m, so)
 		case SADB_X_SPDDELETE2:
 			ipseclog((LOG_DEBUG, "%s: illegal satype=%u\n",
 				__func__, msg->sadb_msg_type));
-			V_pfkeystat.out_invsatype++;
+			PFKEYSTAT_INC(out_invsatype);
 			error = EINVAL;
 			goto senderror;
 		}
@@ -7441,7 +7416,7 @@ key_parse(m, so)
 	case SADB_SATYPE_MIP:
 		ipseclog((LOG_DEBUG, "%s: type %u isn't supported.\n",
 			__func__, msg->sadb_msg_satype));
-		V_pfkeystat.out_invsatype++;
+		PFKEYSTAT_INC(out_invsatype);
 		error = EOPNOTSUPP;
 		goto senderror;
 	case 1:	/* XXX: What does it do? */
@@ -7451,7 +7426,7 @@ key_parse(m, so)
 	default:
 		ipseclog((LOG_DEBUG, "%s: invalid type %u is passed.\n",
 			__func__, msg->sadb_msg_satype));
-		V_pfkeystat.out_invsatype++;
+		PFKEYSTAT_INC(out_invsatype);
 		error = EINVAL;
 		goto senderror;
 	}
@@ -7469,7 +7444,7 @@ key_parse(m, so)
 		if (src0->sadb_address_proto != dst0->sadb_address_proto) {
 			ipseclog((LOG_DEBUG, "%s: upper layer protocol "
 				"mismatched.\n", __func__));
-			V_pfkeystat.out_invaddr++;
+			PFKEYSTAT_INC(out_invaddr);
 			error = EINVAL;
 			goto senderror;
 		}
@@ -7479,7 +7454,7 @@ key_parse(m, so)
 		    PFKEY_ADDR_SADDR(dst0)->sa_family) {
 			ipseclog((LOG_DEBUG, "%s: address family mismatched.\n",
 				__func__));
-			V_pfkeystat.out_invaddr++;
+			PFKEYSTAT_INC(out_invaddr);
 			error = EINVAL;
 			goto senderror;
 		}
@@ -7487,7 +7462,7 @@ key_parse(m, so)
 		    PFKEY_ADDR_SADDR(dst0)->sa_len) {
 			ipseclog((LOG_DEBUG, "%s: address struct size "
 				"mismatched.\n", __func__));
-			V_pfkeystat.out_invaddr++;
+			PFKEYSTAT_INC(out_invaddr);
 			error = EINVAL;
 			goto senderror;
 		}
@@ -7496,7 +7471,7 @@ key_parse(m, so)
 		case AF_INET:
 			if (PFKEY_ADDR_SADDR(src0)->sa_len !=
 			    sizeof(struct sockaddr_in)) {
-				V_pfkeystat.out_invaddr++;
+				PFKEYSTAT_INC(out_invaddr);
 				error = EINVAL;
 				goto senderror;
 			}
@@ -7504,7 +7479,7 @@ key_parse(m, so)
 		case AF_INET6:
 			if (PFKEY_ADDR_SADDR(src0)->sa_len !=
 			    sizeof(struct sockaddr_in6)) {
-				V_pfkeystat.out_invaddr++;
+				PFKEYSTAT_INC(out_invaddr);
 				error = EINVAL;
 				goto senderror;
 			}
@@ -7512,7 +7487,7 @@ key_parse(m, so)
 		default:
 			ipseclog((LOG_DEBUG, "%s: unsupported address family\n",
 				__func__));
-			V_pfkeystat.out_invaddr++;
+			PFKEYSTAT_INC(out_invaddr);
 			error = EAFNOSUPPORT;
 			goto senderror;
 		}
@@ -7534,7 +7509,7 @@ key_parse(m, so)
 		    dst0->sadb_address_prefixlen > plen) {
 			ipseclog((LOG_DEBUG, "%s: illegal prefixlen.\n",
 				__func__));
-			V_pfkeystat.out_invaddr++;
+			PFKEYSTAT_INC(out_invaddr);
 			error = EINVAL;
 			goto senderror;
 		}
@@ -7547,7 +7522,7 @@ key_parse(m, so)
 
 	if (msg->sadb_msg_type >= sizeof(key_typesw)/sizeof(key_typesw[0]) ||
 	    key_typesw[msg->sadb_msg_type] == NULL) {
-		V_pfkeystat.out_invmsgtype++;
+		PFKEYSTAT_INC(out_invmsgtype);
 		error = EINVAL;
 		goto senderror;
 	}
@@ -7649,7 +7624,7 @@ key_align(m, mhp)
 				ipseclog((LOG_DEBUG, "%s: duplicate ext_type "
 					"%u\n", __func__, ext->sadb_ext_type));
 				m_freem(m);
-				V_pfkeystat.out_dupext++;
+				PFKEYSTAT_INC(out_dupext);
 				return EINVAL;
 			}
 			break;
@@ -7657,7 +7632,7 @@ key_align(m, mhp)
 			ipseclog((LOG_DEBUG, "%s: invalid ext_type %u\n",
 				__func__, ext->sadb_ext_type));
 			m_freem(m);
-			V_pfkeystat.out_invexttype++;
+			PFKEYSTAT_INC(out_invexttype);
 			return EINVAL;
 		}
 
@@ -7665,7 +7640,7 @@ key_align(m, mhp)
 
 		if (key_validate_ext(ext, extlen)) {
 			m_freem(m);
-			V_pfkeystat.out_invlen++;
+			PFKEYSTAT_INC(out_invlen);
 			return EINVAL;
 		}
 
@@ -7683,7 +7658,7 @@ key_align(m, mhp)
 
 	if (off != end) {
 		m_freem(m);
-		V_pfkeystat.out_invlen++;
+		PFKEYSTAT_INC(out_invlen);
 		return EINVAL;
 	}
 
@@ -7965,45 +7940,6 @@ key_sa_stir_iv(sav)
 	key_randomfill(sav->iv, sav->ivlen);
 }
 
-/* XXX too much? */
-static struct mbuf *
-key_alloc_mbuf(l)
-	int l;
-{
-	struct mbuf *m = NULL, *n;
-	int len, t;
-
-	len = l;
-	while (len > 0) {
-		MGET(n, M_DONTWAIT, MT_DATA);
-		if (n && len > MLEN)
-			MCLGET(n, M_DONTWAIT);
-		if (!n) {
-			m_freem(m);
-			return NULL;
-		}
-
-		n->m_next = NULL;
-		n->m_len = 0;
-		n->m_len = M_TRAILINGSPACE(n);
-		/* use the bottom of mbuf, hoping we can prepend afterwards */
-		if (n->m_len > len) {
-			t = (n->m_len - len) & ~(sizeof(long) - 1);
-			n->m_data += t;
-			n->m_len = len;
-		}
-
-		len -= n->m_len;
-
-		if (m)
-			m_cat(m, n);
-		else
-			m = n;
-	}
-
-	return m;
-}
-
 /*
  * Take one of the kernel's security keys and convert it into a PF_KEY
  * structure within an mbuf, suitable for sending up to a waiting
@@ -8028,9 +7964,11 @@ key_setkey(struct seckey *src, u_int16_t exttype)
 		return NULL;
 
 	len = PFKEY_ALIGN8(sizeof(struct sadb_key) + _KEYLEN(src));
-	m = key_alloc_mbuf(len);
+	m = m_get2(len, M_NOWAIT, MT_DATA, 0);
 	if (m == NULL)
 		return NULL;
+	m_align(m, len);
+	m->m_len = len;
 	p = mtod(m, struct sadb_key *);
 	bzero(p, len);
 	p->sadb_key_len = PFKEY_UNIT64(len);
@@ -8065,9 +8003,11 @@ key_setlifetime(struct seclifetime *src, u_int16_t exttype)
 	if (src == NULL)
 		return NULL;
 
-	m = key_alloc_mbuf(len);
+	m = m_get2(len, M_NOWAIT, MT_DATA, 0);
 	if (m == NULL)
 		return m;
+	m_align(m, len);
+	m->m_len = len;
 	p = mtod(m, struct sadb_lifetime *);
 
 	bzero(p, len);

@@ -421,7 +421,7 @@ sf_buf_init(void *arg)
 
 	mtx_init(&sf_freelist.sf_lock, "sf_bufs list lock", NULL, MTX_DEF);
 	SLIST_INIT(&sf_freelist.sf_head);
-	sf_base = kmem_alloc_nofault(kernel_map, nsfbufs * PAGE_SIZE);
+	sf_base = kva_alloc(nsfbufs * PAGE_SIZE);
 	sf_bufs = malloc(nsfbufs * sizeof(struct sf_buf), M_TEMP,
 	    M_NOWAIT | M_ZERO);
 	for (i = 0; i < nsfbufs; i++) {
@@ -445,7 +445,7 @@ sf_buf_alloc(struct vm_page *m, int flags)
 		if (flags & SFB_NOWAIT)
 			break;
 		sf_buf_alloc_want++;
-		mbstat.sf_allocwait++;
+		SFSTAT_INC(sf_allocwait);
 		error = msleep(&sf_freelist, &sf_freelist.sf_lock,
 		    (flags & SFB_CATCH) ? PCATCH | PVM : PVM, "sfbufa", 0);
 		sf_buf_alloc_want--;
@@ -501,14 +501,7 @@ uma_small_alloc(uma_zone_t zone, int bytes, u_int8_t *flags, int wait)
 	PMAP_STATS_INC(uma_nsmall_alloc);
 
 	*flags = UMA_SLAB_PRIV;
-
-	if ((wait & (M_NOWAIT|M_USE_RESERVE)) == M_NOWAIT)
-		pflags = VM_ALLOC_INTERRUPT | VM_ALLOC_WIRED;
-	else
-		pflags = VM_ALLOC_SYSTEM | VM_ALLOC_WIRED;
-
-	if (wait & M_ZERO)
-		pflags |= VM_ALLOC_ZERO;
+	pflags = malloc2vm_flags(wait) | VM_ALLOC_WIRED;
 
 	for (;;) {
 		m = vm_page_alloc(NULL, 0, pflags | VM_ALLOC_NOOBJ);

@@ -92,7 +92,7 @@ static void ng_dumphooks(void);
 #endif	/* NETGRAPH_DEBUG */
 /*
  * DEAD versions of the structures.
- * In order to avoid races, it is sometimes neccesary to point
+ * In order to avoid races, it is sometimes necessary to point
  * at SOMETHING even though theoretically, the current entity is
  * INVALID. Use these to avoid these races.
  */
@@ -789,6 +789,8 @@ ng_unref_node(node_p node)
 	if (node == &ng_deadnode)
 		return;
 
+	CURVNET_SET(node->nd_vnet);
+
 	if (refcount_release(&node->nd_refs)) { /* we were the last */
 
 		node->nd_type->refs--; /* XXX maybe should get types lock? */
@@ -807,6 +809,7 @@ ng_unref_node(node_p node)
 		mtx_destroy(&node->nd_input_queue.q_mtx);
 		NG_FREE_NODE(node);
 	}
+	CURVNET_RESTORE();
 }
 
 /************************************************************************
@@ -2008,6 +2011,7 @@ ng_queue_rw(node_p node, item_p  item, int rw)
 		NGI_SET_WRITER(item);
 	else
 		NGI_SET_READER(item);
+	item->depth = 1;
 
 	NG_QUEUE_LOCK(ngq);
 	/* Set OP_PENDING flag and enqueue the item. */
@@ -2286,7 +2290,6 @@ ng_snd_item(item_p item, int flags)
 	}
 
 	if (queue) {
-		item->depth = 1;
 		/* Put it on the queue for that node*/
 		ng_queue_rw(node, item, rw);
 		return ((flags & NG_PROGRESS) ? EINPROGRESS : 0);

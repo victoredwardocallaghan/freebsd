@@ -329,6 +329,26 @@ null_bypass(struct vop_generic_args *ap)
 	return (error);
 }
 
+static int
+null_add_writecount(struct vop_add_writecount_args *ap)
+{
+	struct vnode *lvp, *vp;
+	int error;
+
+	vp = ap->a_vp;
+	lvp = NULLVPTOLOWERVP(vp);
+	KASSERT(vp->v_writecount + ap->a_inc >= 0, ("wrong writecount inc"));
+	if (vp->v_writecount > 0 && vp->v_writecount + ap->a_inc == 0)
+		error = VOP_ADD_WRITECOUNT(lvp, -1);
+	else if (vp->v_writecount == 0 && vp->v_writecount + ap->a_inc > 0)
+		error = VOP_ADD_WRITECOUNT(lvp, 1);
+	else
+		error = 0;
+	if (error == 0)
+		vp->v_writecount += ap->a_inc;
+	return (error);
+}
+
 /*
  * We have to carry on the locking protocol on the null layer vnodes
  * as we progress through the tree. We also have to enforce read-only
@@ -534,6 +554,7 @@ null_rename(struct vop_rename_args *ap)
 	struct vnode *fvp = ap->a_fvp;
 	struct vnode *fdvp = ap->a_fdvp;
 	struct vnode *tvp = ap->a_tvp;
+	struct null_node *tnn;
 
 	/* Check for cross-device rename. */
 	if ((fvp->v_mount != tdvp->v_mount) ||
@@ -548,7 +569,11 @@ null_rename(struct vop_rename_args *ap)
 		vrele(fvp);
 		return (EXDEV);
 	}
-	
+
+	if (tvp != NULL) {
+		tnn = VTONULL(tvp);
+		tnn->null_flags |= NULLV_DROP;
+	}
 	return (null_bypass((struct vop_generic_args *)ap));
 }
 
@@ -665,12 +690,35 @@ null_unlock(struct vop_unlock_args *ap)
 }
 
 /*
- * XXXKIB
+ * Do not allow the VOP_INACTIVE to be passed to the lower layer,
+ * since the reference count on the lower vnode is not related to
+ * ours.
  */
 static int
 null_inactive(struct vop_inactive_args *ap __unused)
 {
+	struct vnode *vp, *lvp;
+	struct null_node *xp;
+	struct mount *mp;
+	struct null_mount *xmp;
 
+	vp = ap->a_vp;
+	xp = VTONULL(vp);
+	lvp = NULLVPTOLOWERVP(vp);
+	mp = vp->v_mount;
+	xmp = MOUNTTONULLMOUNT(mp);
+	if ((xmp->nullm_flags & NULLM_CACHE) == 0 ||
+	    (xp->null_flags & NULLV_DROP) != 0 ||
+	    (lvp->v_vflag & VV_NOSYNC) != 0) {
+		/*
+		 * If this is the last reference and caching of the
+		 * nullfs vnodes is not enabled, or the lower vnode is
+		 * deleted, then free up the vnode so as not to tie up
+		 * the lower vnodes.
+		 */
+		vp->v_object = NULL;
+		vrecycle(vp);
+	}
 	return (0);
 }
 
@@ -703,7 +751,18 @@ null_reclaim(struct vop_reclaim_args *ap)
 	vp->v_object = NULL;
 	vp->v_vnlock = &vp->v_lock;
 	VI_UNLOCK(vp);
-	vput(lowervp);
+
+	/*
+	 * If we were opened for write, we leased one write reference
+	 * to the lower vnode.  If this is a reclamation due to the
+	 * forced unmount, undo the reference now.
+	 */
+	if (vp->v_writecount > 0)
+		VOP_ADD_WRITECOUNT(lowervp, -1);
+	if ((xp->null_flags & NULLV_NOUNLOCK) != 0)
+		vunref(lowervp);
+	else
+		vput(lowervp);
 	free(xp, M_NULLFSNODE);
 
 	return (0);
@@ -824,4 +883,5 @@ struct vop_vector null_vnodeops = {
 	.vop_unlock =		null_unlock,
 	.vop_vptocnp =		null_vptocnp,
 	.vop_vptofh =		null_vptofh,
+	.vop_add_writecount =	null_add_writecount,
 };

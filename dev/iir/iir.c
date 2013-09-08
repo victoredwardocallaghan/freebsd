@@ -399,7 +399,7 @@ iir_init(struct gdt_softc *gdt)
 		gdt->oem_name[7]='\0';
 	} else {
 		/* Old method, based on PCI ID */
-		if (gdt->sc_vendor == INTEL_VENDOR_ID)
+		if (gdt->sc_vendor == INTEL_VENDOR_ID_IIR)
             strcpy(gdt->oem_name,"Intel  ");
         else 
        	    strcpy(gdt->oem_name,"ICP    ");
@@ -794,6 +794,7 @@ gdt_raw_cmd(struct gdt_softc *gdt, union ccb *ccb, int *lock)
 {
     struct gdt_ccb *gccb;
     struct cam_sim *sim;
+    int error;
 
     GDT_DPRINTF(GDT_D_CMD, ("gdt_raw_cmd(%p, %p)\n", gdt, ccb));
 
@@ -844,51 +845,14 @@ gdt_raw_cmd(struct gdt_softc *gdt, union ccb *ccb, int *lock)
     gdt_enc32(gccb->gc_cmd + GDT_CMD_UNION + GDT_RAW_SENSE_DATA,
               gccb->gc_scratch_busbase);
  
-    /*
-     * If we have any data to send with this command,
-     * map it into bus space.
-     */
-    /* Only use S/G if there is a transfer */
-    if ((ccb->ccb_h.flags & CAM_DIR_MASK) != CAM_DIR_NONE) {
-        if ((ccb->ccb_h.flags & CAM_SCATTER_VALID) == 0) { 
-            if ((ccb->ccb_h.flags & CAM_DATA_PHYS) == 0) {
-                int s;
-                int error;
-            
-                /* vorher unlock von splcam() ??? */
-                s = splsoftvm();
-                error =
-                    bus_dmamap_load(gdt->sc_buffer_dmat,
-                                    gccb->gc_dmamap,
-                                    ccb->csio.data_ptr,
-                                    ccb->csio.dxfer_len,
-                                    gdtexecuteccb,
-                                    gccb, /*flags*/0);
-                if (error == EINPROGRESS) {
-                    xpt_freeze_simq(sim, 1);
-                    gccb->gc_ccb->ccb_h.status |= CAM_RELEASE_SIMQ;
-                }
-                splx(s);
-            } else {
-		panic("iir: CAM_DATA_PHYS not supported");
-            }
-        } else {
-            struct bus_dma_segment *segs;
-
-            if ((ccb->ccb_h.flags & CAM_DATA_PHYS) != 0)
-                panic("iir%d: iir_action - Physical "
-                      "segment pointers unsupported", gdt->sc_hanum);
-
-            if ((ccb->ccb_h.flags & CAM_SG_LIST_PHYS)==0)
-                panic("iir%d: iir_action - Virtual "
-                      "segment addresses unsupported", gdt->sc_hanum);
-
-            /* Just use the segments provided */
-            segs = (struct bus_dma_segment *)ccb->csio.data_ptr;
-            gdtexecuteccb(gccb, segs, ccb->csio.sglist_cnt, 0);
-        }
-    } else {
-        gdtexecuteccb(gccb, NULL, 0, 0);
+    error = bus_dmamap_load_ccb(gdt->sc_buffer_dmat,
+			        gccb->gc_dmamap,
+			        ccb,
+			        gdtexecuteccb,
+			        gccb, /*flags*/0);
+    if (error == EINPROGRESS) {
+        xpt_freeze_simq(sim, 1);
+        gccb->gc_ccb->ccb_h.status |= CAM_RELEASE_SIMQ;
     }
 
     *lock = splcam();
@@ -903,6 +867,7 @@ gdt_cache_cmd(struct gdt_softc *gdt, union ccb *ccb, int *lock)
     u_int8_t *cmdp;
     u_int16_t opcode;
     u_int32_t blockno, blockcnt;
+    int error;
 
     GDT_DPRINTF(GDT_D_CMD, ("gdt_cache_cmd(%p, %p)\n", gdt, ccb));
 
@@ -953,49 +918,15 @@ gdt_cache_cmd(struct gdt_softc *gdt, union ccb *ccb, int *lock)
     gdt_enc32(gccb->gc_cmd + GDT_CMD_UNION + GDT_CACHE_BLOCKCNT,
               blockcnt);
 
-    /*
-     * If we have any data to send with this command,
-     * map it into bus space.
-     */
-    /* Only use S/G if there is a transfer */
-    if ((ccb->ccb_h.flags & CAM_SCATTER_VALID) == 0) { 
-        if ((ccb->ccb_h.flags & CAM_DATA_PHYS) == 0) {
-            int s;
-            int error;
-            
-            /* vorher unlock von splcam() ??? */
-            s = splsoftvm();
-            error =
-                bus_dmamap_load(gdt->sc_buffer_dmat,
+    error = bus_dmamap_load_ccb(gdt->sc_buffer_dmat,
                                 gccb->gc_dmamap,
-                                ccb->csio.data_ptr,
-                                ccb->csio.dxfer_len,
+                                ccb,
                                 gdtexecuteccb,
                                 gccb, /*flags*/0);
-            if (error == EINPROGRESS) {
-                xpt_freeze_simq(sim, 1);
-                gccb->gc_ccb->ccb_h.status |= CAM_RELEASE_SIMQ;
-            }
-            splx(s);
-        } else {
-	    panic("iir: CAM_DATA_PHYS not supported");
-        }
-    } else {
-        struct bus_dma_segment *segs;
-
-        if ((ccb->ccb_h.flags & CAM_DATA_PHYS) != 0)
-            panic("iir%d: iir_action - Physical "
-                  "segment pointers unsupported", gdt->sc_hanum);
-
-        if ((ccb->ccb_h.flags & CAM_SG_LIST_PHYS)==0)
-            panic("iir%d: iir_action - Virtual "
-                  "segment addresses unsupported", gdt->sc_hanum);
-
-        /* Just use the segments provided */
-        segs = (struct bus_dma_segment *)ccb->csio.data_ptr;
-        gdtexecuteccb(gccb, segs, ccb->csio.sglist_cnt, 0);
+    if (error == EINPROGRESS) {
+        xpt_freeze_simq(sim, 1);
+        gccb->gc_ccb->ccb_h.status |= CAM_RELEASE_SIMQ;
     }
-
     *lock = splcam();
     return (gccb);
 }
@@ -1443,7 +1374,7 @@ iir_action( struct cam_sim *sim, union ccb *ccb )
                   (bus == gdt->sc_virt_bus ? 127 : gdt->sc_bus_id[bus]);
               cpi->base_transfer_speed = 3300;
               strncpy(cpi->sim_vid, "FreeBSD", SIM_IDLEN);
-              if (gdt->sc_vendor == INTEL_VENDOR_ID)
+              if (gdt->sc_vendor == INTEL_VENDOR_ID_IIR)
                   strncpy(cpi->hba_vid, "Intel Corp.", HBA_IDLEN);
               else
                   strncpy(cpi->hba_vid, "ICP vortex ", HBA_IDLEN);

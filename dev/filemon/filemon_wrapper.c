@@ -28,6 +28,8 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
+#include "opt_compat.h"
+
 #if __FreeBSD_version > 800032
 #define FILEMON_HAS_LINKAT
 #endif
@@ -82,15 +84,14 @@ filemon_pid_check(struct proc *p)
 {
 	struct filemon *filemon;
 
-	TAILQ_FOREACH(filemon, &filemons_inuse, link) {
-		if (p->p_pid == filemon->pid)
-			return (filemon);
+	while (p->p_pptr) {
+		TAILQ_FOREACH(filemon, &filemons_inuse, link) {
+			if (p->p_pid == filemon->pid)
+				return (filemon);
+		}
+		p = p->p_pptr;
 	}
-
-	if (p->p_pptr == NULL)
-		return (NULL);
-
-	return (filemon_pid_check(p->p_pptr));
+	return (NULL);
 }
 
 static void
@@ -573,6 +574,7 @@ filemon_wrapper_sys_exit(struct thread *td, struct sys_exit_args *uap)
 			    (uintmax_t)now.tv_sec, (uintmax_t)now.tv_usec);
 
 			filemon_output(filemon, filemon->msgbufr, len);
+			filemon->pid = -1;
 		}
 
 		/* Unlock the found filemon structure. */

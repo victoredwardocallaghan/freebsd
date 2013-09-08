@@ -36,6 +36,7 @@ __FBSDID("$FreeBSD$");
 #include "opt_inet.h"
 #include "opt_inet6.h"
 #include "opt_ipsec.h"
+#include "opt_kdtrace.h"
 #include "opt_tcpdebug.h"
 
 #include <sys/param.h>
@@ -53,6 +54,7 @@ __FBSDID("$FreeBSD$");
 #endif
 #include <sys/priv.h>
 #include <sys/proc.h>
+#include <sys/sdt.h>
 #include <sys/socket.h>
 #include <sys/socketvar.h>
 #include <sys/protosw.h>
@@ -66,6 +68,7 @@ __FBSDID("$FreeBSD$");
 
 #include <netinet/cc.h>
 #include <netinet/in.h>
+#include <netinet/in_kdtrace.h>
 #include <netinet/in_pcb.h>
 #include <netinet/in_systm.h>
 #include <netinet/in_var.h>
@@ -174,7 +177,7 @@ SYSCTL_VNET_PROC(_net_inet_tcp, TCPCTL_V6MSSDFLT, v6mssdflt,
 VNET_DEFINE(int, tcp_minmss) = TCP_MINMSS;
 SYSCTL_VNET_INT(_net_inet_tcp, OID_AUTO, minmss, CTLFLAG_RW,
      &VNET_NAME(tcp_minmss), 0,
-    "Minmum TCP Maximum Segment Size");
+    "Minimum TCP Maximum Segment Size");
 
 VNET_DEFINE(int, tcp_do_rfc1323) = 1;
 SYSCTL_VNET_INT(_net_inet_tcp, TCPCTL_DO_RFC1323, rfc1323, CTLFLAG_RW,
@@ -235,7 +238,7 @@ static char *	tcp_log_addr(struct in_conninfo *inc, struct tcphdr *th,
  * variable net.inet.tcp.tcbhashsize
  */
 #ifndef TCBHASHSIZE
-#define TCBHASHSIZE	512
+#define TCBHASHSIZE	0
 #endif
 
 /*
@@ -282,10 +285,34 @@ tcp_inpcb_init(void *mem, int size, int flags)
 	return (0);
 }
 
+/*
+ * Take a value and get the next power of 2 that doesn't overflow.
+ * Used to size the tcp_inpcb hash buckets.
+ */
+static int
+maketcp_hashsize(int size)
+{
+	int hashsize;
+
+	/*
+	 * auto tune.
+	 * get the next power of 2 higher than maxsockets.
+	 */
+	hashsize = 1 << fls(size);
+	/* catch overflow, and just go one power of 2 smaller */
+	if (hashsize < size) {
+		hashsize = 1 << (fls(size) - 1);
+	}
+	return (hashsize);
+}
+
 void
 tcp_init(void)
 {
+	const char *tcbhash_tuneable;
 	int hashsize;
+
+	tcbhash_tuneable = "net.inet.tcp.tcbhashsize";
 
 	if (hhook_head_register(HHOOK_TYPE_TCP, HHOOK_TCP_EST_IN,
 	    &V_tcp_hhh[HHOOK_TCP_EST_IN], HHOOK_NOWAIT|HHOOK_HEADISINVNET) != 0)
@@ -295,10 +322,43 @@ tcp_init(void)
 		printf("%s: WARNING: unable to register helper hook\n", __func__);
 
 	hashsize = TCBHASHSIZE;
-	TUNABLE_INT_FETCH("net.inet.tcp.tcbhashsize", &hashsize);
+	TUNABLE_INT_FETCH(tcbhash_tuneable, &hashsize);
+	if (hashsize == 0) {
+		/*
+		 * Auto tune the hash size based on maxsockets.
+		 * A perfect hash would have a 1:1 mapping
+		 * (hashsize = maxsockets) however it's been
+		 * suggested that O(2) average is better.
+		 */
+		hashsize = maketcp_hashsize(maxsockets / 4);
+		/*
+		 * Our historical default is 512,
+		 * do not autotune lower than this.
+		 */
+		if (hashsize < 512)
+			hashsize = 512;
+		if (bootverbose)
+			printf("%s: %s auto tuned to %d\n", __func__,
+			    tcbhash_tuneable, hashsize);
+	}
+	/*
+	 * We require a hashsize to be a power of two.
+	 * Previously if it was not a power of two we would just reset it
+	 * back to 512, which could be a nasty surprise if you did not notice
+	 * the error message.
+	 * Instead what we do is clip it to the closest power of two lower
+	 * than the specified hash value.
+	 */
 	if (!powerof2(hashsize)) {
-		printf("WARNING: TCB hash size not a power of 2\n");
-		hashsize = 512; /* safe default */
+		int oldhashsize = hashsize;
+
+		hashsize = maketcp_hashsize(hashsize);
+		/* prevent absurdly low value */
+		if (hashsize < 16)
+			hashsize = 16;
+		printf("%s: WARNING: TCB hash size not a power of 2, "
+		    "clipped from %d to %d.\n", __func__, oldhashsize,
+		    hashsize);
 	}
 	in_pcbinfo_init(&V_tcbinfo, "tcp", &V_tcb, hashsize, hashsize,
 	    "tcp_inpcb", tcp_inpcb_init, NULL, UMA_ZONE_NOFREE,
@@ -310,6 +370,7 @@ tcp_init(void)
 	V_tcpcb_zone = uma_zcreate("tcpcb", sizeof(struct tcpcb_mem),
 	    NULL, NULL, NULL, NULL, UMA_ALIGN_PTR, UMA_ZONE_NOFREE);
 	uma_zone_set_max(V_tcpcb_zone, maxsockets);
+	uma_zone_set_warning(V_tcpcb_zone, "kern.ipc.maxsockets limit reached");
 
 	tcp_tw_init();
 	syncache_init();
@@ -516,7 +577,7 @@ tcp_respond(struct tcpcb *tp, void *ipgen, struct tcphdr *th, struct mbuf *m,
 		}
 	}
 	if (m == NULL) {
-		m = m_gethdr(M_DONTWAIT, MT_DATA);
+		m = m_gethdr(M_NOWAIT, MT_DATA);
 		if (m == NULL)
 			return;
 		tlen = 0;
@@ -529,11 +590,11 @@ tcp_respond(struct tcpcb *tp, void *ipgen, struct tcphdr *th, struct mbuf *m,
 			nth = (struct tcphdr *)(ip6 + 1);
 		} else
 #endif /* INET6 */
-	      {
-		bcopy((caddr_t)ip, mtod(m, caddr_t), sizeof(struct ip));
-		ip = mtod(m, struct ip *);
-		nth = (struct tcphdr *)(ip + 1);
-	      }
+		{
+			bcopy((caddr_t)ip, mtod(m, caddr_t), sizeof(struct ip));
+			ip = mtod(m, struct ip *);
+			nth = (struct tcphdr *)(ip + 1);
+		}
 		bcopy((caddr_t)th, (caddr_t)nth, sizeof(struct tcphdr));
 		flags = TH_ACK;
 	} else {
@@ -553,10 +614,10 @@ tcp_respond(struct tcpcb *tp, void *ipgen, struct tcphdr *th, struct mbuf *m,
 			nth = (struct tcphdr *)(ip6 + 1);
 		} else
 #endif /* INET6 */
-	      {
-		xchg(ip->ip_dst.s_addr, ip->ip_src.s_addr, uint32_t);
-		nth = (struct tcphdr *)(ip + 1);
-	      }
+		{
+			xchg(ip->ip_dst.s_addr, ip->ip_src.s_addr, uint32_t);
+			nth = (struct tcphdr *)(ip + 1);
+		}
 		if (th != nth) {
 			/*
 			 * this is usually a case when an extension header
@@ -574,8 +635,8 @@ tcp_respond(struct tcpcb *tp, void *ipgen, struct tcphdr *th, struct mbuf *m,
 		ip6->ip6_flow = 0;
 		ip6->ip6_vfc = IPV6_VERSION;
 		ip6->ip6_nxt = IPPROTO_TCP;
-		ip6->ip6_plen = 0;		/* Set in ip6_output(). */
 		tlen += sizeof (struct ip6_hdr) + sizeof (struct tcphdr);
+		ip6->ip6_plen = htons(tlen - sizeof(*ip6));
 	}
 #endif
 #if defined(INET) && defined(INET6)
@@ -584,10 +645,10 @@ tcp_respond(struct tcpcb *tp, void *ipgen, struct tcphdr *th, struct mbuf *m,
 #ifdef INET
 	{
 		tlen += sizeof (struct tcpiphdr);
-		ip->ip_len = tlen;
+		ip->ip_len = htons(tlen);
 		ip->ip_ttl = V_ip_defttl;
 		if (V_path_mtu_discovery)
-			ip->ip_off |= IP_DF;
+			ip->ip_off |= htons(IP_DF);
 	}
 #endif
 	m->m_len = tlen;
@@ -644,6 +705,10 @@ tcp_respond(struct tcpcb *tp, void *ipgen, struct tcphdr *th, struct mbuf *m,
 	if (tp == NULL || (inp->inp_socket->so_options & SO_DEBUG))
 		tcp_trace(TA_OUTPUT, 0, tp, mtod(m, void *), th, 0);
 #endif
+	if (flags & TH_RST)
+		TCP_PROBE5(accept_refused, NULL, NULL, m->m_data, tp, nth);
+
+	TCP_PROBE5(send, NULL, tp, m->m_data, tp, nth);
 #ifdef INET6
 	if (isipv6)
 		(void) ip6_output(m, NULL, NULL, ipflags, NULL, NULL, inp);
@@ -824,7 +889,7 @@ tcp_drop(struct tcpcb *tp, int errno)
 	INP_WLOCK_ASSERT(tp->t_inpcb);
 
 	if (TCPS_HAVERCVDSYN(tp->t_state)) {
-		tp->t_state = TCPS_CLOSED;
+		tcp_state_change(tp, TCPS_CLOSED);
 		(void) tcp_output(tp);
 		TCPSTAT_INC(tcps_drops);
 	} else
@@ -902,14 +967,14 @@ tcp_discardcb(struct tcpcb *tp)
 				ssthresh = 2;
 			ssthresh *= (u_long)(tp->t_maxseg +
 #ifdef INET6
-				      (isipv6 ? sizeof (struct ip6_hdr) +
-					       sizeof (struct tcphdr) :
+			    (isipv6 ? sizeof (struct ip6_hdr) +
+				sizeof (struct tcphdr) :
 #endif
-				       sizeof (struct tcpiphdr)
+				sizeof (struct tcpiphdr)
 #ifdef INET6
-				       )
+			    )
 #endif
-				      );
+			    );
 		} else
 			ssthresh = 0;
 		metrics.rmx_ssthresh = ssthresh;
@@ -1002,7 +1067,7 @@ tcp_drain(void)
 	 * XXX: The "Net/3" implementation doesn't imply that the TCP
 	 *      reassembly queue should be flushed, but in a situation
 	 *	where we're really low on mbufs, this is potentially
-	 *	usefull.
+	 *	useful.
 	 */
 		INP_INFO_RLOCK(&V_tcbinfo);
 		LIST_FOREACH(inpb, V_tcbinfo.ipi_listhead, inp_list) {
@@ -1398,12 +1463,11 @@ tcp_ctlinput(int cmd, struct sockaddr *sa, void *vip)
 					    /*
 					     * If no alternative MTU was
 					     * proposed, try the next smaller
-					     * one.  ip->ip_len has already
-					     * been swapped in icmp_input().
+					     * one.
 					     */
 					    if (!mtu)
-						mtu = ip_next_mtu(ip->ip_len,
-						 1);
+						mtu = ip_next_mtu(
+						 ntohs(ip->ip_len), 1);
 					    if (mtu < V_tcp_minmss
 						 + sizeof(struct tcpiphdr))
 						mtu = V_tcp_minmss
@@ -1713,7 +1777,7 @@ tcp_mtudisc(struct inpcb *inp, int mtuoffer)
  * tcp_mss_update to get the peer/interface MTU.
  */
 u_long
-tcp_maxmtu(struct in_conninfo *inc, int *flags)
+tcp_maxmtu(struct in_conninfo *inc, struct tcp_ifcap *cap)
 {
 	struct route sro;
 	struct sockaddr_in *dst;
@@ -1738,10 +1802,11 @@ tcp_maxmtu(struct in_conninfo *inc, int *flags)
 			maxmtu = min(sro.ro_rt->rt_rmx.rmx_mtu, ifp->if_mtu);
 
 		/* Report additional interface capabilities. */
-		if (flags != NULL) {
+		if (cap != NULL) {
 			if (ifp->if_capenable & IFCAP_TSO4 &&
 			    ifp->if_hwassist & CSUM_TSO)
-				*flags |= CSUM_TSO;
+				cap->ifcap |= CSUM_TSO;
+				cap->tsomax = ifp->if_hw_tsomax;
 		}
 		RTFREE(sro.ro_rt);
 	}
@@ -1751,7 +1816,7 @@ tcp_maxmtu(struct in_conninfo *inc, int *flags)
 
 #ifdef INET6
 u_long
-tcp_maxmtu6(struct in_conninfo *inc, int *flags)
+tcp_maxmtu6(struct in_conninfo *inc, struct tcp_ifcap *cap)
 {
 	struct route_in6 sro6;
 	struct ifnet *ifp;
@@ -1775,10 +1840,11 @@ tcp_maxmtu6(struct in_conninfo *inc, int *flags)
 				     IN6_LINKMTU(sro6.ro_rt->rt_ifp));
 
 		/* Report additional interface capabilities. */
-		if (flags != NULL) {
+		if (cap != NULL) {
 			if (ifp->if_capenable & IFCAP_TSO6 &&
 			    ifp->if_hwassist & CSUM_TSO)
-				*flags |= CSUM_TSO;
+				cap->ifcap |= CSUM_TSO;
+				cap->tsomax = ifp->if_hw_tsomax;
 		}
 		RTFREE(sro6.ro_rt);
 	}
@@ -1803,7 +1869,7 @@ ipsec_hdrsiz_tcp(struct tcpcb *tp)
 
 	if ((tp == NULL) || ((inp = tp->t_inpcb) == NULL))
 		return (0);
-	MGETHDR(m, M_DONTWAIT, MT_DATA);
+	m = m_gethdr(M_NOWAIT, MT_DATA);
 	if (!m)
 		return (0);
 
@@ -2316,4 +2382,20 @@ tcp_log_addr(struct in_conninfo *inc, struct tcphdr *th, void *ip4hdr,
 	if (*(s + size - 1) != '\0')
 		panic("%s: string too long", __func__);
 	return (s);
+}
+
+/*
+ * A subroutine which makes it easy to track TCP state changes with DTrace.
+ * This function shouldn't be called for t_state initializations that don't
+ * correspond to actual TCP state transitions.
+ */
+void
+tcp_state_change(struct tcpcb *tp, int newstate)
+{
+#if defined(KDTRACE_HOOKS)
+	int pstate = tp->t_state;
+#endif
+
+	tp->t_state = newstate;
+	TCP_PROBE6(state_change, NULL, tp, NULL, tp, NULL, pstate);
 }

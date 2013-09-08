@@ -211,7 +211,7 @@ safe_partname(struct safe_softc *sc)
 static void
 default_harvest(struct rndtest_state *rsp, void *buf, u_int count)
 {
-	random_harvest(buf, count, count*NBBY, 0, RANDOM_PURE);
+	random_harvest(buf, count, count*NBBY/2, 0, RANDOM_PURE);
 }
 #endif /* SAFE_NO_RNG */
 
@@ -220,28 +220,15 @@ safe_attach(device_t dev)
 {
 	struct safe_softc *sc = device_get_softc(dev);
 	u_int32_t raddr;
-	u_int32_t cmd, i, devinfo;
+	u_int32_t i, devinfo;
 	int rid;
 
 	bzero(sc, sizeof (*sc));
 	sc->sc_dev = dev;
 
 	/* XXX handle power management */
- 
-	cmd = pci_read_config(dev, PCIR_COMMAND, 4);
-	cmd |= PCIM_CMD_MEMEN | PCIM_CMD_BUSMASTEREN;
-	pci_write_config(dev, PCIR_COMMAND, cmd, 4);
-	cmd = pci_read_config(dev, PCIR_COMMAND, 4);
 
-	if (!(cmd & PCIM_CMD_MEMEN)) {
-		device_printf(dev, "failed to enable memory mapping\n");
-		goto bad;
-	}
-
-	if (!(cmd & PCIM_CMD_BUSMASTEREN)) {
-		device_printf(dev, "failed to enable bus mastering\n");
-		goto bad;
-	}
+	pci_enable_busmaster(dev);
 
 	/* 
 	 * Setup memory-mapping of PCI registers.
@@ -1325,15 +1312,15 @@ safe_process(device_t dev, struct cryptop *crp, int hint)
 				totlen = re->re_src_mapsize;
 				if (re->re_src_m->m_flags & M_PKTHDR) {
 					len = MHLEN;
-					MGETHDR(m, M_DONTWAIT, MT_DATA);
+					MGETHDR(m, M_NOWAIT, MT_DATA);
 					if (m && !m_dup_pkthdr(m, re->re_src_m,
-					    M_DONTWAIT)) {
+					    M_NOWAIT)) {
 						m_free(m);
 						m = NULL;
 					}
 				} else {
 					len = MLEN;
-					MGET(m, M_DONTWAIT, MT_DATA);
+					MGET(m, M_NOWAIT, MT_DATA);
 				}
 				if (m == NULL) {
 					safestats.st_nombuf++;
@@ -1341,7 +1328,7 @@ safe_process(device_t dev, struct cryptop *crp, int hint)
 					goto errout;
 				}
 				if (totlen >= MINCLSIZE) {
-					MCLGET(m, M_DONTWAIT);
+					MCLGET(m, M_NOWAIT);
 					if ((m->m_flags & M_EXT) == 0) {
 						m_free(m);
 						safestats.st_nomcl++;
@@ -1357,7 +1344,7 @@ safe_process(device_t dev, struct cryptop *crp, int hint)
 
 				while (totlen > 0) {
 					if (top) {
-						MGET(m, M_DONTWAIT, MT_DATA);
+						MGET(m, M_NOWAIT, MT_DATA);
 						if (m == NULL) {
 							m_freem(top);
 							safestats.st_nombuf++;
@@ -1368,7 +1355,7 @@ safe_process(device_t dev, struct cryptop *crp, int hint)
 						len = MLEN;
 					}
 					if (top && totlen >= MINCLSIZE) {
-						MCLGET(m, M_DONTWAIT);
+						MCLGET(m, M_NOWAIT);
 						if ((m->m_flags & M_EXT) == 0) {
 							*mp = m;
 							m_freem(top);

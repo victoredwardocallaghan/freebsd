@@ -743,7 +743,7 @@ rt2860_alloc_rx_ring(struct rt2860_softc *sc, struct rt2860_rx_ring *ring)
 			goto fail;
 		}
 
-		data->m = m_getcl(M_DONTWAIT, MT_DATA, M_PKTHDR);
+		data->m = m_getcl(M_NOWAIT, MT_DATA, M_PKTHDR);
 		if (data->m == NULL) {
 			device_printf(sc->sc_dev,
 			    "could not allocate rx mbuf\n");
@@ -1237,7 +1237,7 @@ rt2860_rx_intr(struct rt2860_softc *sc)
 		}
 #endif
 
-		m1 = m_getcl(M_DONTWAIT, MT_DATA, M_PKTHDR);
+		m1 = m_getcl(M_NOWAIT, MT_DATA, M_PKTHDR);
 		if (__predict_false(m1 == NULL)) {
 			ifp->if_ierrors++;
 			goto skip;
@@ -1528,7 +1528,7 @@ rt2860_tx(struct rt2860_softc *sc, struct mbuf *m, struct ieee80211_node *ni)
 		tid = 0;
 	}
 	ring = &sc->txq[qid];
-	ridx = ic->ic_rt->rateCodeToIndex[rate];
+	ridx = ieee80211_legacy_rate_lookup(ic->ic_rt, rate);
 
 	/* get MCS code from rate index */
 	mcs = rt2860_rates[ridx].mcs;
@@ -1625,7 +1625,7 @@ rt2860_tx(struct rt2860_softc *sc, struct mbuf *m, struct ieee80211_node *ni)
 		}
 	}
 	if (__predict_false(error != 0)) {
-		m1 = m_defrag(m, M_DONTWAIT);
+		m1 = m_defrag(m, M_NOWAIT);
 		if (m1 == NULL) {
 			device_printf(sc->sc_dev,
 			    "could not defragment mbuf\n");
@@ -1779,7 +1779,8 @@ rt2860_tx_raw(struct rt2860_softc *sc, struct mbuf *m,
 
 	/* Choose a TX rate index. */
 	rate = params->ibp_rate0;
-	ridx = ic->ic_rt->rateCodeToIndex[rate];
+	ridx = ieee80211_legacy_rate_lookup(ic->ic_rt,
+	    rate & IEEE80211_RATE_VAL);
 	if (ridx == (uint8_t)-1) {
 		/* XXX fall back to mcast/mgmt rate? */
 		m_freem(m);
@@ -1877,7 +1878,7 @@ rt2860_tx_raw(struct rt2860_softc *sc, struct mbuf *m,
 		}
 	}
 	if (__predict_false(error != 0)) {
-		m1 = m_defrag(m, M_DONTWAIT);
+		m1 = m_defrag(m, M_NOWAIT);
 		if (m1 == NULL) {
 			device_printf(sc->sc_dev,
 			    "could not defragment mbuf\n");
@@ -2311,7 +2312,7 @@ rt2860_set_basicrates(struct rt2860_softc *sc,
 		if (!(rate & IEEE80211_RATE_BASIC))
 			continue;
 
-		mask |= 1 << ic->ic_rt->rateCodeToIndex[RV(rate)];
+		mask |= 1 << ieee80211_legacy_rate_lookup(ic->ic_rt, RV(rate));
 	}
 
 	RAL_WRITE(sc, RT2860_LEGACY_BASIC_RATE, mask);

@@ -58,7 +58,7 @@ struct run_rx_radiotap_header {
 	int8_t		wr_dbm_antsignal;
 	uint8_t		wr_antenna;
 	uint8_t		wr_antsignal;
-} __packed;
+} __packed __aligned(8);
 
 #define RUN_RX_RADIOTAP_PRESENT				\
 	(1 << IEEE80211_RADIOTAP_FLAGS |		\
@@ -75,7 +75,7 @@ struct run_tx_radiotap_header {
 	uint16_t	wt_chan_freq;
 	uint16_t	wt_chan_flags;
 	uint8_t		wt_hwqueue;
-} __packed;
+} __packed __aligned(8);
 
 #define IEEE80211_RADIOTAP_HWQUEUE 15
 
@@ -239,6 +239,7 @@ struct run_softc {
 	uint8_t				sta_running;
 	uint8_t				rvp_cnt;
 	uint8_t				rvp_bmap;
+	uint8_t				sc_detached;
 
 	union {
 		struct run_rx_radiotap_header th;

@@ -102,8 +102,8 @@ tid_alloc(void)
 		mtx_unlock(&tid_lock);
 		return (-1);
 	}
-	tid = tid_buffer[tid_head++];
-	tid_head %= TID_BUFFER_SIZE;
+	tid = tid_buffer[tid_head];
+	tid_head = (tid_head + 1) % TID_BUFFER_SIZE;
 	mtx_unlock(&tid_lock);
 	return (tid);
 }
@@ -115,11 +115,11 @@ tid_free(lwpid_t tid)
 
 	mtx_lock(&tid_lock);
 	if ((tid_tail + 1) % TID_BUFFER_SIZE == tid_head) {
-		tmp_tid = tid_buffer[tid_head++];
+		tmp_tid = tid_buffer[tid_head];
 		tid_head = (tid_head + 1) % TID_BUFFER_SIZE;
 	}
-	tid_buffer[tid_tail++] = tid;
-	tid_tail %= TID_BUFFER_SIZE;
+	tid_buffer[tid_tail] = tid;
+	tid_tail = (tid_tail + 1) % TID_BUFFER_SIZE;
 	mtx_unlock(&tid_lock);
 	if (tmp_tid != -1)
 		free_unr(tid_unrhdr, tmp_tid);
@@ -748,10 +748,10 @@ stopme:
  * P_SINGLE_EXIT | return_instead == 0| return_instead != 0
  *---------------+--------------------+---------------------
  *       0       | returns 0          |   returns 0 or 1
- *               | when ST ends       |   immediatly
+ *               | when ST ends       |   immediately
  *---------------+--------------------+---------------------
  *       1       | thread exits       |   returns 1
- *               |                    |  immediatly
+ *               |                    |  immediately
  * 0 = thread_exit() or suspension ok,
  * other = return error instead of stopping the thread.
  *
@@ -793,6 +793,17 @@ thread_suspend_check(int return_instead)
 		if (P_SHOULDSTOP(p) == P_STOPPED_SINGLE &&
 		    (p->p_flag & P_SINGLE_BOUNDARY) && return_instead)
 			return (ERESTART);
+
+		/*
+		 * Ignore suspend requests for stop signals if they
+		 * are deferred.
+		 */
+		if (P_SHOULDSTOP(p) == P_STOPPED_SIG &&
+		    td->td_flags & TDF_SBDRY) {
+			KASSERT(return_instead,
+			    ("TDF_SBDRY set for unsafe thread_suspend_check"));
+			return (0);
+		}
 
 		/*
 		 * If the process is waiting for us to exit,

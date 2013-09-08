@@ -259,7 +259,7 @@ ubsec_partname(struct ubsec_softc *sc)
 static void
 default_harvest(struct rndtest_state *rsp, void *buf, u_int count)
 {
-	random_harvest(buf, count, count*NBBY, 0, RANDOM_PURE);
+	random_harvest(buf, count, count*NBBY/2, 0, RANDOM_PURE);
 }
 
 static int
@@ -267,7 +267,7 @@ ubsec_attach(device_t dev)
 {
 	struct ubsec_softc *sc = device_get_softc(dev);
 	struct ubsec_dma *dmap;
-	u_int32_t cmd, i;
+	u_int32_t i;
 	int rid;
 
 	bzero(sc, sizeof (*sc));
@@ -312,20 +312,7 @@ ubsec_attach(device_t dev)
 		    UBS_FLAGS_LONGCTX | UBS_FLAGS_HWNORM | UBS_FLAGS_BIGKEY;
 	}
 
-	cmd = pci_read_config(dev, PCIR_COMMAND, 4);
-	cmd |= PCIM_CMD_MEMEN | PCIM_CMD_BUSMASTEREN;
-	pci_write_config(dev, PCIR_COMMAND, cmd, 4);
-	cmd = pci_read_config(dev, PCIR_COMMAND, 4);
-
-	if (!(cmd & PCIM_CMD_MEMEN)) {
-		device_printf(dev, "failed to enable memory mapping\n");
-		goto bad;
-	}
-
-	if (!(cmd & PCIM_CMD_BUSMASTEREN)) {
-		device_printf(dev, "failed to enable bus mastering\n");
-		goto bad;
-	}
+	pci_enable_busmaster(dev);
 
 	/*
 	 * Setup memory-mapping of PCI registers.
@@ -1375,18 +1362,18 @@ ubsec_process(device_t dev, struct cryptop *crp, int hint)
 				ubsecstats.hst_unaligned++;
 				totlen = q->q_src_mapsize;
 				if (totlen >= MINCLSIZE) {
-					m = m_getcl(M_DONTWAIT, MT_DATA,
+					m = m_getcl(M_NOWAIT, MT_DATA,
 					    q->q_src_m->m_flags & M_PKTHDR);
 					len = MCLBYTES;
 				} else if (q->q_src_m->m_flags & M_PKTHDR) {
-					m = m_gethdr(M_DONTWAIT, MT_DATA);
+					m = m_gethdr(M_NOWAIT, MT_DATA);
 					len = MHLEN;
 				} else {
-					m = m_get(M_DONTWAIT, MT_DATA);
+					m = m_get(M_NOWAIT, MT_DATA);
 					len = MLEN;
 				}
 				if (m && q->q_src_m->m_flags & M_PKTHDR &&
-				    !m_dup_pkthdr(m, q->q_src_m, M_DONTWAIT)) {
+				    !m_dup_pkthdr(m, q->q_src_m, M_NOWAIT)) {
 					m_free(m);
 					m = NULL;
 				}
@@ -1402,11 +1389,11 @@ ubsec_process(device_t dev, struct cryptop *crp, int hint)
 
 				while (totlen > 0) {
 					if (totlen >= MINCLSIZE) {
-						m = m_getcl(M_DONTWAIT,
+						m = m_getcl(M_NOWAIT,
 						    MT_DATA, 0);
 						len = MCLBYTES;
 					} else {
-						m = m_get(M_DONTWAIT, MT_DATA);
+						m = m_get(M_NOWAIT, MT_DATA);
 						len = MLEN;
 					}
 					if (m == NULL) {

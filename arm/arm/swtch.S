@@ -79,6 +79,7 @@
  */
 
 #include "assym.s"
+#include "opt_sched.h"
 
 #include <machine/asm.h>
 #include <machine/asmacros.h>
@@ -113,7 +114,7 @@ ENTRY(cpu_throw)
 
 	GET_PCPU(r7)
 
-#ifdef ARM_VFP_SUPPORT
+#ifdef VFP
 	/*
 	 * vfp_discard will clear pcpu->pc_vfpcthread, and modify
 	 * and modify the control as needed.
@@ -123,7 +124,7 @@ ENTRY(cpu_throw)
 	bne     3f
 	bl      _C_LABEL(vfp_discard)           /* yes, shut down vfp */
 3:
-#endif		/* ARM_VFP_SUPPORT */
+#endif		/* VFP */
 
 	ldr	r7, [r5, #(TD_PCB)]		/* r7 = new thread's PCB */
   
@@ -210,10 +211,18 @@ ENTRY(cpu_throw)
 	GET_PCPU(r6)
 	str	r7, [r6, #PC_CURPCB]
 
+	add	sp, sp, #4;
 	ldmfd	sp!, {r4-r7, pc}
+END(cpu_throw)
 
 ENTRY(cpu_switch)
 	stmfd	sp!, {r4-r7, lr}
+	sub	sp, sp, #4;
+#ifdef __ARM_EABI__
+	.save	{r4-r7, lr}
+	.pad	#4
+#endif
+
 	mov	r6, r2 /* Save the mutex */
 
 .Lswitch_resume:
@@ -299,7 +308,7 @@ ENTRY(cpu_switch)
 	/* rem: r9 = new PCB */
 	/* rem: interrupts are enabled */
 
-#ifdef ARM_VFP_SUPPORT
+#ifdef VFP
 	/*
 	 * vfp_store will clear pcpu->pc_vfpcthread, save 
 	 * registers and state, and modify the control as needed.
@@ -321,7 +330,7 @@ ENTRY(cpu_switch)
 	add	r0, r2, #(PCB_VFPSTATE)
 	bl	_C_LABEL(vfp_store)
 1:
-#endif		/* ARM_VFP_SUPPORT */
+#endif		/* VFP */
 
 	/* r1 now free! */
 
@@ -428,6 +437,7 @@ ENTRY(cpu_switch)
 
 	/* Release the old thread */
 	str	r6, [r4, #TD_LOCK]
+#if defined(SCHED_ULE) && defined(SMP)
 	ldr	r6, .Lblocked_lock
 	GET_CURTHREAD_PTR(r3)
 
@@ -435,6 +445,7 @@ ENTRY(cpu_switch)
 	ldr	r4, [r3, #TD_LOCK]
 	cmp	r4, r6
 	beq	1b
+#endif
 	
 	/* XXXSCW: Safe to re-enable FIQs here */
 
@@ -466,15 +477,6 @@ ENTRY(cpu_switch)
 	ldr	r13, [r7, #(PCB_SP)]
 #endif
 
-	/* rem: r6 = lock */
-	/* rem: r7 = new pcb */
-
-#ifdef ARMFPE
-	add	r0, r7, #(USER_SIZE) & 0x00ff
-	add	r0, r0, #(USER_SIZE) & 0xff00
-	bl	_C_LABEL(arm_fpe_core_changecontext)
-#endif
-
 	/* rem: r5 = new lwp's proc */
 	/* rem: r6 = lock */
 	/* rem: r7 = new PCB */
@@ -485,6 +487,7 @@ ENTRY(cpu_switch)
 	 * Pull the registers that got pushed when either savectx() or
 	 * cpu_switch() was called and return.
 	 */
+	add	sp, sp, #4;
 	ldmfd	sp!, {r4-r7, pc}
 #ifdef DIAGNOSTIC
 .Lswitch_bogons:
@@ -496,15 +499,18 @@ ENTRY(cpu_switch)
 .Lswitch_panic_str:
 	.asciz	"cpu_switch: sched_qs empty with non-zero sched_whichqs!\n"
 #endif
+END(cpu_switch)
+
 ENTRY(savectx)
 	stmfd   sp!, {r4-r7, lr}
+	sub	sp, sp, #4
 	/*
 	 * r0 = pcb
 	 */
 	/* Store all the registers in the process's pcb */
 	add	r2, r0, #(PCB_R8)
 	stmia	r2, {r8-r13}
-#ifdef ARM_VFP_SUPPORT
+#ifdef VFP
 	/*
 	 * vfp_store will clear pcpu->pc_vfpcthread, save 
 	 * registers and state, and modify the control as needed.
@@ -524,10 +530,13 @@ ENTRY(savectx)
 	add	r0, r0, #(PCB_VFPSTATE)
 	bl	_C_LABEL(vfp_store)
 1:
-#endif		/* ARM_VFP_SUPPORT */
+#endif		/* VFP */
+	add	sp, sp, #4;
 	ldmfd	sp!, {r4-r7, pc}
+END(savectx)
 
 ENTRY(fork_trampoline)
+	STOP_UNWINDING	/* Can't unwind beyond the thread enty point */
 	mov	r1, r5
 	mov	r2, sp
 	mov	r0, r4
@@ -543,3 +552,5 @@ ENTRY(fork_trampoline)
 	movs	pc, lr			/* Exit */
 
 AST_LOCALS
+END(fork_trampoline)
+

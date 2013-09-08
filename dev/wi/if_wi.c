@@ -1360,9 +1360,9 @@ wi_rx_intr(struct wi_softc *sc)
 	}
 
 	if (off + len > MHLEN)
-		m = m_getcl(M_DONTWAIT, MT_DATA, M_PKTHDR);
+		m = m_getcl(M_NOWAIT, MT_DATA, M_PKTHDR);
 	else
-		m = m_gethdr(M_DONTWAIT, MT_DATA);
+		m = m_gethdr(M_NOWAIT, MT_DATA);
 	if (m == NULL) {
 		CSR_WRITE_2(sc, WI_EVENT_ACK, WI_EV_RX);
 		ifp->if_ierrors++;
@@ -1905,8 +1905,7 @@ wi_seek_bap(struct wi_softc *sc, int id, int off)
 static int
 wi_read_bap(struct wi_softc *sc, int id, int off, void *buf, int buflen)
 {
-	u_int16_t *ptr;
-	int i, error, cnt;
+	int error, cnt;
 
 	if (buflen == 0)
 		return 0;
@@ -1915,9 +1914,7 @@ wi_read_bap(struct wi_softc *sc, int id, int off, void *buf, int buflen)
 			return error;
 	}
 	cnt = (buflen + 1) / 2;
-	ptr = (u_int16_t *)buf;
-	for (i = 0; i < cnt; i++)
-		*ptr++ = CSR_READ_2(sc, WI_DATA0);
+	CSR_READ_MULTI_STREAM_2(sc, WI_DATA0, (u_int16_t *)buf, cnt);
 	sc->sc_bap_off += cnt * 2;
 	return 0;
 }
@@ -1925,8 +1922,7 @@ wi_read_bap(struct wi_softc *sc, int id, int off, void *buf, int buflen)
 static int
 wi_write_bap(struct wi_softc *sc, int id, int off, void *buf, int buflen)
 {
-	u_int16_t *ptr;
-	int i, error, cnt;
+	int error, cnt;
 
 	if (buflen == 0)
 		return 0;
@@ -1936,9 +1932,7 @@ wi_write_bap(struct wi_softc *sc, int id, int off, void *buf, int buflen)
 			return error;
 	}
 	cnt = (buflen + 1) / 2;
-	ptr = (u_int16_t *)buf;
-	for (i = 0; i < cnt; i++)
-		CSR_WRITE_2(sc, WI_DATA0, ptr[i]);
+	CSR_WRITE_MULTI_STREAM_2(sc, WI_DATA0, (u_int16_t *)buf, cnt);
 	sc->sc_bap_off += cnt * 2;
 
 	return 0;

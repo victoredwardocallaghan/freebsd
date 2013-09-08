@@ -1099,7 +1099,7 @@ fatm_supply_small_buffers(struct fatm_softc *sc)
 				if_printf(sc->ifp, "out of rbufs\n");
 				break;
 			}
-			MGETHDR(m, M_DONTWAIT, MT_DATA);
+			MGETHDR(m, M_NOWAIT, MT_DATA);
 			if (m == NULL) {
 				LIST_INSERT_HEAD(&sc->rbuf_free, rb, link);
 				break;
@@ -1189,7 +1189,7 @@ fatm_supply_large_buffers(struct fatm_softc *sc)
 				if_printf(sc->ifp, "out of rbufs\n");
 				break;
 			}
-			if ((m = m_getcl(M_DONTWAIT, MT_DATA,
+			if ((m = m_getcl(M_NOWAIT, MT_DATA,
 			    M_PKTHDR)) == NULL) {
 				LIST_INSERT_HEAD(&sc->rbuf_free, rb, link);
 				break;
@@ -1768,17 +1768,17 @@ copy_mbuf(struct mbuf *m)
 {
 	struct mbuf *new;
 
-	MGET(new, M_DONTWAIT, MT_DATA);
+	MGET(new, M_NOWAIT, MT_DATA);
 	if (new == NULL)
 		return (NULL);
 
 	if (m->m_flags & M_PKTHDR) {
 		M_MOVE_PKTHDR(new, m);
 		if (m->m_len > MHLEN)
-			MCLGET(new, M_WAIT);
+			MCLGET(new, M_WAITOK);
 	} else {
 		if (m->m_len > MLEN)
-			MCLGET(new, M_WAIT);
+			MCLGET(new, M_WAITOK);
 	}
 
 	bcopy(m->m_data, new->m_data, m->m_len);
@@ -2829,21 +2829,13 @@ fatm_attach(device_t dev)
 	ifp->if_linkmiblen = sizeof(IFP2IFATM(sc->ifp)->mib);
 
 	/*
-	 * Enable memory and bustmaster
+	 * Enable busmaster
 	 */
-	cfg = pci_read_config(dev, PCIR_COMMAND, 2);
-	cfg |= PCIM_CMD_MEMEN | PCIM_CMD_BUSMASTEREN;
-	pci_write_config(dev, PCIR_COMMAND, cfg, 2);
+	pci_enable_busmaster(dev);
 
 	/*
 	 * Map memory
 	 */
-	cfg = pci_read_config(dev, PCIR_COMMAND, 2);
-	if (!(cfg & PCIM_CMD_MEMEN)) {
-		if_printf(ifp, "failed to enable memory mapping\n");
-		error = ENXIO;
-		goto fail;
-	}
 	sc->memid = 0x10;
 	sc->memres = bus_alloc_resource_any(dev, SYS_RES_MEMORY, &sc->memid,
 	    RF_ACTIVE);

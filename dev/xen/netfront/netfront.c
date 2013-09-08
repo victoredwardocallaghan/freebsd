@@ -24,7 +24,6 @@
  * SUCH DAMAGE.
  */
 
-
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
@@ -77,16 +76,15 @@ __FBSDID("$FreeBSD$");
 
 #include <machine/intr_machdep.h>
 
-#include <machine/xen/xen-os.h>
-#include <machine/xen/xenfunc.h>
-#include <machine/xen/xenvar.h>
+#include <xen/xen-os.h>
 #include <xen/hypervisor.h>
 #include <xen/xen_intr.h>
-#include <xen/evtchn.h>
 #include <xen/gnttab.h>
 #include <xen/interface/memory.h>
 #include <xen/interface/io/netif.h>
 #include <xen/xenbus/xenbusvar.h>
+
+#include <machine/xen/xenvar.h>
 
 #include <dev/xen/netfront/mbufq.h>
 
@@ -135,6 +133,7 @@ static const int MODPARM_rx_flip = 0;
  * to mirror the Linux MAX_SKB_FRAGS constant.
  */
 #define	MAX_TX_REQ_FRAGS (65536 / PAGE_SIZE + 2)
+#define	NF_TSO_MAXBURST ((IP_MAXPACKET / PAGE_SIZE) * MCLBYTES)
 
 #define RX_COPY_THRESHOLD 256
 
@@ -208,8 +207,6 @@ struct xn_chain_data {
 	struct mbuf    *xn_rx_chain[NET_RX_RING_SIZE+1];
 };
 
-#define NUM_ELEMENTS(x) (sizeof(x)/sizeof(*x))
-
 struct net_device_stats
 {
 	u_long	rx_packets;		/* total packets received	*/
@@ -244,7 +241,6 @@ struct net_device_stats
 };
 
 struct netfront_info {
-		
 	struct ifnet *xn_ifp;
 #if __FreeBSD_version >= 700000
 	struct lro_ctrl xn_lro;
@@ -260,8 +256,7 @@ struct netfront_info {
 	struct mtx   rx_lock;
 	struct mtx   sc_lock;
 
-	u_int handle;
-	u_int irq;
+	xen_intr_handle_t xen_intr_handle;
 	u_int copying_receiver;
 	u_int carrier;
 	u_int maxfrags;
@@ -328,12 +323,6 @@ struct netfront_rx_info {
 #define netfront_carrier_ok(netif)	((netif)->carrier)
 
 /* Access macros for acquiring freeing slots in xn_free_{tx,rx}_idxs[]. */
-
-
-
-/*
- * Access macros for acquiring freeing slots in tx_skbs[].
- */
 
 static inline void
 add_id_to_freelist(struct mbuf **list, uintptr_t id)
@@ -517,7 +506,6 @@ netfront_resume(device_t dev)
 	return (0);
 }
 
-
 /* Common code used when first setting up, and when resuming. */
 static int 
 talk_to_backend(device_t dev, struct netfront_info *info)
@@ -557,7 +545,8 @@ talk_to_backend(device_t dev, struct netfront_info *info)
 		goto abort_transaction;
 	}
 	err = xs_printf(xst, node,
-			"event-channel", "%u", irq_to_evtchn_port(info->irq));
+			"event-channel", "%u",
+			xen_intr_port(info->xen_intr_handle));
 	if (err) {
 		message = "writing event-channel";
 		goto abort_transaction;
@@ -605,7 +594,6 @@ talk_to_backend(device_t dev, struct netfront_info *info)
 	return err;
 }
 
-
 static int 
 setup_device(device_t dev, struct netfront_info *info)
 {
@@ -620,7 +608,6 @@ setup_device(device_t dev, struct netfront_info *info)
 	info->rx_ring_ref = GRANT_REF_INVALID;
 	info->rx.sring = NULL;
 	info->tx.sring = NULL;
-	info->irq = 0;
 
 	txs = (netif_tx_sring_t *)malloc(PAGE_SIZE, M_DEVBUF, M_NOWAIT|M_ZERO);
 	if (!txs) {
@@ -647,12 +634,13 @@ setup_device(device_t dev, struct netfront_info *info)
 	if (error)
 		goto fail;
 
-	error = bind_listening_port_to_irqhandler(xenbus_get_otherend_id(dev),
-	    "xn", xn_intr, info, INTR_TYPE_NET | INTR_MPSAFE, &info->irq);
+	error = xen_intr_alloc_and_bind_local_port(dev,
+	    xenbus_get_otherend_id(dev), /*filter*/NULL, xn_intr, info,
+	    INTR_TYPE_NET | INTR_MPSAFE | INTR_ENTROPY, &info->xen_intr_handle);
 
 	if (error) {
 		xenbus_dev_fatal(dev, error,
-				 "bind_evtchn_to_irqhandler failed");
+				 "xen_intr_alloc_and_bind_local_port failed");
 		goto fail;
 	}
 
@@ -794,7 +782,7 @@ netif_release_tx_bufs(struct netfront_info *np)
 		add_id_to_freelist(np->tx_mbufs, i);
 		np->xn_cdata.xn_tx_chain_cnt--;
 		if (np->xn_cdata.xn_tx_chain_cnt < 0) {
-			panic("netif_release_tx_bufs: tx_chain_cnt must be >= 0");
+			panic("%s: tx_chain_cnt must be >= 0", __func__);
 		}
 		m_free(m);
 	}
@@ -817,7 +805,7 @@ network_alloc_rx_buffers(struct netfront_info *sc)
 	
 	req_prod = sc->rx.req_prod_pvt;
 
-	if (unlikely(sc->carrier == 0))
+	if (__predict_false(sc->carrier == 0))
 		return;
 	
 	/*
@@ -831,13 +819,13 @@ network_alloc_rx_buffers(struct netfront_info *sc)
 	 */
 	batch_target = sc->rx_target - (req_prod - sc->rx.rsp_cons);
 	for (i = mbufq_len(&sc->xn_rx_batch); i < batch_target; i++) {
-		MGETHDR(m_new, M_DONTWAIT, MT_DATA);
+		MGETHDR(m_new, M_NOWAIT, MT_DATA);
 		if (m_new == NULL) {
 			printf("%s: MGETHDR failed\n", __func__);
 			goto no_mbuf;
 		}
 
-		m_cljget(m_new, M_DONTWAIT, MJUMPAGESIZE);
+		m_cljget(m_new, M_NOWAIT, MJUMPAGESIZE);
 		if ((m_new->m_flags & M_EXT) == 0) {
 			printf("%s: m_cljget failed\n", __func__);
 			m_freem(m_new);
@@ -946,7 +934,6 @@ refill:
 		reservation.domid        = DOMID_SELF;
 
 		if (!xen_feature(XENFEAT_auto_translated_physmap)) {
-
 			/* After all PTEs have been zapped, flush the TLB. */
 			sc->rx_mcl[i-1].args[MULTI_UVMFLAGS_INDEX] =
 			    UVMF_TLB_FLUSH|UVMF_ALL;
@@ -958,15 +945,11 @@ refill:
 			/* Zap PTEs and give away pages in one big multicall. */
 			(void)HYPERVISOR_multicall(sc->rx_mcl, i+1);
 
-			/* Check return status of HYPERVISOR_dom_mem_op(). */
-			if (unlikely(sc->rx_mcl[i].result != i))
-				panic("Unable to reduce memory reservation\n");
-			} else {
-				if (HYPERVISOR_memory_op(
-				    XENMEM_decrease_reservation, &reservation)
-				    != i)
-					panic("Unable to reduce memory "
-					    "reservation\n");
+			if (__predict_false(sc->rx_mcl[i].result != i ||
+			    HYPERVISOR_memory_op(XENMEM_decrease_reservation,
+			    &reservation) != i))
+				panic("%s: unable to reduce memory "
+				    "reservation\n", __func__);
 		}
 	} else {
 		wmb();
@@ -977,7 +960,7 @@ refill:
 push:
 	RING_PUSH_REQUESTS_AND_CHECK_NOTIFY(&sc->rx, notify);
 	if (notify)
-		notify_remote_via_irq(sc->irq);
+		xen_intr_signal(sc->xen_intr_handle);
 }
 
 static void
@@ -1019,7 +1002,7 @@ xn_rxeof(struct netfront_info *np)
 			err = xennet_get_responses(np, &rinfo, rp, &i, &m,
 			    &pages_flipped);
 
-			if (unlikely(err)) {
+			if (__predict_false(err)) {
 				if (m)
 					mbufq_tail(&errq, m);
 				np->stats.rx_errors++;
@@ -1167,10 +1150,10 @@ xn_txeof(struct netfront_info *np)
 			 */
 			if (!m->m_next)
 				ifp->if_opackets++;
-			if (unlikely(gnttab_query_foreign_access(
+			if (__predict_false(gnttab_query_foreign_access(
 			    np->grant_tx_ref[id]) != 0)) {
-				panic("grant id %u still in use by the backend",
-				      id);
+				panic("%s: grant id %u still in use by the "
+				    "backend", __func__, id);
 			}
 			gnttab_end_foreign_access_ref(
 				np->grant_tx_ref[id]);
@@ -1210,7 +1193,6 @@ xn_txeof(struct netfront_info *np)
 			netif_wake_queue(dev);
 #endif
 	}
-
 }
 
 static void
@@ -1240,7 +1222,6 @@ xn_intr(void *xsc)
 		xn_start(ifp);
 }
 
-
 static void
 xennet_move_rx_slot(struct netfront_info *np, struct mbuf *m,
 	grant_ref_t ref)
@@ -1267,7 +1248,7 @@ xennet_get_extras(struct netfront_info *np,
 		struct mbuf *m;
 		grant_ref_t ref;
 
-		if (unlikely(*cons + 1 == rp)) {
+		if (__predict_false(*cons + 1 == rp)) {
 #if 0			
 			if (net_ratelimit())
 				WPRINTK("Missing extra info\n");
@@ -1279,7 +1260,7 @@ xennet_get_extras(struct netfront_info *np,
 		extra = (struct netif_extra_info *)
 		RING_GET_RESPONSE(&np->rx, ++(*cons));
 
-		if (unlikely(!extra->type ||
+		if (__predict_false(!extra->type ||
 			extra->type >= XEN_NETIF_EXTRA_TYPE_MAX)) {
 #if 0				
 			if (net_ratelimit())
@@ -1319,17 +1300,15 @@ xennet_get_responses(struct netfront_info *np,
 
 	m0 = m = m_prev = xennet_get_rx_mbuf(np, *cons);
 
-	
 	if (rx->flags & NETRXF_extra_info) {
 		err = xennet_get_extras(np, extras, rp, cons);
 	}
-
 
 	if (m0 != NULL) {
 		m0->m_pkthdr.len = 0;
 		m0->m_next = NULL;
 	}
-	
+
 	for (;;) {
 		u_long mfn;
 
@@ -1337,7 +1316,7 @@ xennet_get_responses(struct netfront_info *np,
 		DPRINTK("rx->status=%hd rx->offset=%hu frags=%u\n",
 			rx->status, rx->offset, frags);
 #endif
-		if (unlikely(rx->status < 0 ||
+		if (__predict_false(rx->status < 0 ||
 			rx->offset + rx->status > PAGE_SIZE)) {
 
 #if 0						
@@ -1468,9 +1447,7 @@ xn_tick_locked(struct netfront_info *sc)
 	callout_reset(&sc->xn_stat_ch, hz, xn_tick, sc);
 
 	/* XXX placeholder for printing debug information */
-     
 }
-
 
 static void
 xn_tick(void *xsc) 
@@ -1481,7 +1458,6 @@ xn_tick(void *xsc)
 	XN_RX_LOCK(sc);
 	xn_tick_locked(sc);
 	XN_RX_UNLOCK(sc);
-     
 }
 
 /**
@@ -1530,7 +1506,7 @@ xn_assemble_tx_request(struct netfront_info *sc, struct mbuf *m_head)
 	 * the Linux network stack.
 	 */
 	if (nfrags > sc->maxfrags) {
-		m = m_defrag(m_head, M_DONTWAIT);
+		m = m_defrag(m_head, M_NOWAIT);
 		if (!m) {
 			/*
 			 * Defrag failed, so free the mbuf and
@@ -1595,10 +1571,12 @@ xn_assemble_tx_request(struct netfront_info *sc, struct mbuf *m_head)
 		tx = RING_GET_REQUEST(&sc->tx, sc->tx.req_prod_pvt);
 		id = get_id_from_freelist(sc->tx_mbufs);
 		if (id == 0)
-			panic("xn_start_locked: was allocated the freelist head!\n");
+			panic("%s: was allocated the freelist head!\n",
+			    __func__);
 		sc->xn_cdata.xn_tx_chain_cnt++;
 		if (sc->xn_cdata.xn_tx_chain_cnt > NET_TX_RING_SIZE)
-			panic("xn_start_locked: tx_chain_cnt must be <= NET_TX_RING_SIZE\n");
+			panic("%s: tx_chain_cnt must be <= NET_TX_RING_SIZE\n",
+			    __func__);
 		sc->tx_mbufs[id] = m;
 		tx->id = id;
 		ref = gnttab_claim_grant_reference(&sc->gref_tx_head);
@@ -1700,7 +1678,7 @@ xn_start_locked(struct ifnet *ifp)
 
 	RING_PUSH_REQUESTS_AND_CHECK_NOTIFY(&sc->tx, notify);
 	if (notify)
-		notify_remote_via_irq(sc->irq);
+		xen_intr_signal(sc->xen_intr_handle);
 
 	if (RING_FULL(&sc->tx)) {
 		sc->tx_full = 1;
@@ -1709,7 +1687,6 @@ xn_start_locked(struct ifnet *ifp)
 #endif
 	}
 }
-
 
 static void
 xn_start(struct ifnet *ifp)
@@ -1744,9 +1721,7 @@ xn_ifinit_locked(struct netfront_info *sc)
 	if_link_state_change(ifp, LINK_STATE_UP);
 	
 	callout_reset(&sc->xn_stat_ch, hz, xn_tick, sc);
-
 }
-
 
 static void 
 xn_ifinit(void *xsc)
@@ -1756,9 +1731,7 @@ xn_ifinit(void *xsc)
 	XN_LOCK(sc);
 	xn_ifinit_locked(sc);
 	XN_UNLOCK(sc);
-
 }
-
 
 static int
 xn_ioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
@@ -1987,7 +1960,7 @@ network_connect(struct netfront_info *np)
 	 * packets.
 	 */
 	netfront_carrier_on(np);
-	notify_remote_via_irq(np->irq);
+	xen_intr_signal(np->xen_intr_handle);
 	XN_TX_LOCK(np);
 	xn_txeof(np);
 	XN_TX_UNLOCK(np);
@@ -2076,8 +2049,9 @@ xn_configure_features(struct netfront_info *np)
 	return (err);
 }
 
-/** Create a network device.
- * @param handle device handle
+/**
+ * Create a network device.
+ * @param dev  Newbus device representing this virtual NIC.
  */
 int 
 create_netdev(device_t dev)
@@ -2149,6 +2123,7 @@ create_netdev(device_t dev)
 	
     	ifp->if_hwassist = XN_CSUM_FEATURES;
     	ifp->if_capabilities = IFCAP_HWCSUM;
+	ifp->if_hw_tsomax = NF_TSO_MAXBURST;
 	
     	ether_ifattach(ifp, np->mac);
     	callout_init(&np->xn_stat_ch, CALLOUT_MPSAFE);
@@ -2198,10 +2173,17 @@ netfront_detach(device_t dev)
 static void
 netif_free(struct netfront_info *info)
 {
+	XN_LOCK(info);
+	xn_stop(info);
+	XN_UNLOCK(info);
+	callout_drain(&info->xn_stat_ch);
 	netif_disconnect_backend(info);
-#if 0
-	close_netdev(info);
-#endif
+	if (info->xn_ifp != NULL) {
+		ether_ifdetach(info->xn_ifp);
+		if_free(info->xn_ifp);
+		info->xn_ifp = NULL;
+	}
+	ifmedia_removeall(&info->sc_media);
 }
 
 static void
@@ -2216,10 +2198,7 @@ netif_disconnect_backend(struct netfront_info *info)
 	free_ring(&info->tx_ring_ref, &info->tx.sring);
 	free_ring(&info->rx_ring_ref, &info->rx.sring);
 
-	if (info->irq)
-		unbind_from_irqhandler(info->irq);
-
-	info->irq = 0;
+	xen_intr_unbind(&info->xen_intr_handle);
 }
 
 static void
@@ -2261,7 +2240,7 @@ static device_method_t netfront_methods[] = {
 	/* Xenbus interface */
 	DEVMETHOD(xenbus_otherend_changed, netfront_backend_changed),
 
-	{ 0, 0 } 
+	DEVMETHOD_END
 }; 
 
 static driver_t netfront_driver = { 
@@ -2271,4 +2250,5 @@ static driver_t netfront_driver = {
 }; 
 devclass_t netfront_devclass; 
  
-DRIVER_MODULE(xe, xenbusb_front, netfront_driver, netfront_devclass, 0, 0); 
+DRIVER_MODULE(xe, xenbusb_front, netfront_driver, netfront_devclass, NULL,
+    NULL); 

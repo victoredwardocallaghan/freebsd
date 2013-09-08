@@ -367,10 +367,11 @@ tcp_usr_listen(struct socket *so, int backlog, struct thread *td)
 		error = in_pcbbind(inp, (struct sockaddr *)0, td->td_ucred);
 	INP_HASH_WUNLOCK(&V_tcbinfo);
 	if (error == 0) {
-		tp->t_state = TCPS_LISTEN;
+		tcp_state_change(tp, TCPS_LISTEN);
 		solisten_proto(so, backlog);
 #ifdef TCP_OFFLOAD
-		tcp_offload_listen_start(tp);
+		if ((so->so_options & SO_NO_OFFLOAD) == 0)
+			tcp_offload_listen_start(tp);
 #endif
 	}
 	SOCK_UNLOCK(so);
@@ -411,10 +412,11 @@ tcp6_usr_listen(struct socket *so, int backlog, struct thread *td)
 	}
 	INP_HASH_WUNLOCK(&V_tcbinfo);
 	if (error == 0) {
-		tp->t_state = TCPS_LISTEN;
+		tcp_state_change(tp, TCPS_LISTEN);
 		solisten_proto(so, backlog);
 #ifdef TCP_OFFLOAD
-		tcp_offload_listen_start(tp);
+		if ((so->so_options & SO_NO_OFFLOAD) == 0)
+			tcp_offload_listen_start(tp);
 #endif
 	}
 	SOCK_UNLOCK(so);
@@ -468,6 +470,7 @@ tcp_usr_connect(struct socket *so, struct sockaddr *nam, struct thread *td)
 		goto out;
 #ifdef TCP_OFFLOAD
 	if (registered_toedevs > 0 &&
+	    (so->so_options & SO_NO_OFFLOAD) == 0 &&
 	    (error = tcp_offload_connect(so, nam)) == 0)
 		goto out;
 #endif
@@ -534,6 +537,7 @@ tcp6_usr_connect(struct socket *so, struct sockaddr *nam, struct thread *td)
 			goto out;
 #ifdef TCP_OFFLOAD
 		if (registered_toedevs > 0 &&
+		    (so->so_options & SO_NO_OFFLOAD) == 0 &&
 		    (error = tcp_offload_connect(so, nam)) == 0)
 			goto out;
 #endif
@@ -550,6 +554,7 @@ tcp6_usr_connect(struct socket *so, struct sockaddr *nam, struct thread *td)
 		goto out;
 #ifdef TCP_OFFLOAD
 	if (registered_toedevs > 0 &&
+	    (so->so_options & SO_NO_OFFLOAD) == 0 &&
 	    (error = tcp_offload_connect(so, nam)) == 0)
 		goto out;
 #endif
@@ -766,6 +771,7 @@ tcp_usr_rcvd(struct socket *so, int flags)
 #ifdef TCP_OFFLOAD
 	if (tp->t_flags & TF_TOE)
 		tcp_offload_rcvd(tp);
+	else
 #endif
 	tcp_output(tp);
 
@@ -1146,7 +1152,7 @@ tcp_connect(struct tcpcb *tp, struct sockaddr *nam, struct thread *td)
 
 	soisconnecting(so);
 	TCPSTAT_INC(tcps_connattempt);
-	tp->t_state = TCPS_SYN_SENT;
+	tcp_state_change(tp, TCPS_SYN_SENT);
 	tp->iss = tcp_new_isn(tp);
 	tcp_sendseqinit(tp);
 
@@ -1218,7 +1224,7 @@ tcp6_connect(struct tcpcb *tp, struct sockaddr *nam, struct thread *td)
 
 	soisconnecting(so);
 	TCPSTAT_INC(tcps_connattempt);
-	tp->t_state = TCPS_SYN_SENT;
+	tcp_state_change(tp, TCPS_SYN_SENT);
 	tp->iss = tcp_new_isn(tp);
 	tcp_sendseqinit(tp);
 
@@ -1473,7 +1479,6 @@ unlock_and_done:
 
 		case TCP_KEEPIDLE:
 		case TCP_KEEPINTVL:
-		case TCP_KEEPCNT:
 		case TCP_KEEPINIT:
 			INP_WUNLOCK(inp);
 			error = sooptcopyin(sopt, &ui, sizeof(ui), sizeof(ui));
@@ -1506,13 +1511,6 @@ unlock_and_done:
 					tcp_timer_activate(tp, TT_2MSL,
 					    TP_MAXIDLE(tp));
 				break;
-			case TCP_KEEPCNT:
-				tp->t_keepcnt = ui;
-				if ((tp->t_state == TCPS_FIN_WAIT_2) &&
-				    (TP_MAXIDLE(tp) > 0))
-					tcp_timer_activate(tp, TT_2MSL,
-					    TP_MAXIDLE(tp));
-				break;
 			case TCP_KEEPINIT:
 				tp->t_keepinit = ui;
 				if (tp->t_state == TCPS_SYN_RECEIVED ||
@@ -1521,6 +1519,20 @@ unlock_and_done:
 					    TP_KEEPINIT(tp));
 				break;
 			}
+			goto unlock_and_done;
+
+		case TCP_KEEPCNT:
+			INP_WUNLOCK(inp);
+			error = sooptcopyin(sopt, &ui, sizeof(ui), sizeof(ui));
+			if (error)
+				return (error);
+
+			INP_WLOCK_RECHECK(inp);
+			tp->t_keepcnt = ui;
+			if ((tp->t_state == TCPS_FIN_WAIT_2) &&
+			    (TP_MAXIDLE(tp) > 0))
+				tcp_timer_activate(tp, TT_2MSL,
+				    TP_MAXIDLE(tp));
 			goto unlock_and_done;
 
 		default:
@@ -1692,7 +1704,7 @@ tcp_usrclosed(struct tcpcb *tp)
 #endif
 		/* FALLTHROUGH */
 	case TCPS_CLOSED:
-		tp->t_state = TCPS_CLOSED;
+		tcp_state_change(tp, TCPS_CLOSED);
 		tp = tcp_close(tp);
 		/*
 		 * tcp_close() should never return NULL here as the socket is
@@ -1708,11 +1720,11 @@ tcp_usrclosed(struct tcpcb *tp)
 		break;
 
 	case TCPS_ESTABLISHED:
-		tp->t_state = TCPS_FIN_WAIT_1;
+		tcp_state_change(tp, TCPS_FIN_WAIT_1);
 		break;
 
 	case TCPS_CLOSE_WAIT:
-		tp->t_state = TCPS_LAST_ACK;
+		tcp_state_change(tp, TCPS_LAST_ACK);
 		break;
 	}
 	if (tp->t_state >= TCPS_FIN_WAIT_2) {

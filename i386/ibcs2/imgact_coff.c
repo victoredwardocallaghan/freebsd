@@ -146,7 +146,7 @@ load_coff_section(struct vmspace *vmspace, struct vnode *vp, vm_offset_t offset,
 
 	error = copyout(data_buf, (caddr_t) map_addr, copy_len);
 
-	kmem_free_wakeup(exec_map, (vm_offset_t)data_buf, PAGE_SIZE);
+	kmap_free_wakeup(exec_map, (vm_offset_t)data_buf, PAGE_SIZE);
 
 	return error;
 }
@@ -168,7 +168,7 @@ coff_load_file(struct thread *td, char *name)
   	unsigned long text_offset = 0, text_address = 0, text_size = 0;
   	unsigned long data_offset = 0, data_address = 0, data_size = 0;
   	unsigned long bss_size = 0;
-  	int i;
+	int i, writecount;
 
 	NDINIT(&nd, LOOKUP, ISOPEN | LOCKLEAF | FOLLOW | SAVENAME,
 	    UIO_SYSSPACE, name, td);
@@ -181,7 +181,10 @@ coff_load_file(struct thread *td, char *name)
   	if (vp == NULL)
     		return ENOEXEC;
 
-  	if (vp->v_writecount) {
+	error = VOP_GET_WRITECOUNT(vp, &writecount);
+	if (error != 0)
+		goto fail;
+	if (writecount != 0) {
     		error = ETXTBSY;
     		goto fail;
   	}
@@ -277,7 +280,7 @@ coff_load_file(struct thread *td, char *name)
   	error = 0;
 
  dealloc_and_fail:
-	kmem_free_wakeup(exec_map, (vm_offset_t)ptr,  PAGE_SIZE);
+	kmap_free_wakeup(exec_map, (vm_offset_t)ptr,  PAGE_SIZE);
  fail:
 	VOP_UNLOCK(vp, 0);
  unlocked_fail:
@@ -414,7 +417,7 @@ exec_coff_imgact(imgp)
 		    	}
 			free(libbuf, M_TEMP);
 		}
-		kmem_free_wakeup(exec_map, (vm_offset_t)buf, len);
+		kmap_free_wakeup(exec_map, (vm_offset_t)buf, len);
 	    	if (error)
 	      		goto fail;
 	  	}

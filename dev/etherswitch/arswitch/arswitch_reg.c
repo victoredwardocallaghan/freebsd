@@ -148,7 +148,7 @@ int
 arswitch_writereg_msb(device_t dev, int addr, int data)
 {
 
-	return (arswitch_writereg16(dev, addr + 2, data >> 16));
+	return (arswitch_writereg16(dev, addr + 2, (data >> 16) & 0xffff));
 }
 
 int
@@ -164,8 +164,8 @@ arswitch_writereg(device_t dev, int addr, int value)
 {
 
 	/* XXX Check the first write too? */
-	arswitch_writereg_lsb(dev, addr, value);
-	return (arswitch_writereg_msb(dev, addr, value));
+	arswitch_writereg_msb(dev, addr, value);
+	return (arswitch_writereg_lsb(dev, addr, value));
 }
 
 int
@@ -177,4 +177,25 @@ arswitch_modifyreg(device_t dev, int addr, int mask, int set)
 	value &= ~mask;
 	value |= set;
 	return (arswitch_writereg(dev, addr, value));
+}
+
+int
+arswitch_waitreg(device_t dev, int addr, int mask, int val, int timeout)
+{
+	int err, v;
+
+	err = -1;
+	while (1) {
+		v = arswitch_readreg(dev, addr);
+		v &= mask;
+		if (v == val) {
+			err = 0;
+			break;
+		}
+		if (!timeout)
+			break;
+		DELAY(1);
+		timeout--;
+	}
+	return (err);
 }

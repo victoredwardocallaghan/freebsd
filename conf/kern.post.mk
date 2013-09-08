@@ -154,7 +154,7 @@ ${mfile:T:S/.m$/.h/}: ${mfile}
 kernel-clean:
 	rm -f *.o *.so *.So *.ko *.s eddep errs \
 	    ${FULLKERNEL} ${KERNEL_KO} ${KERNEL_KO}.symbols \
-	    linterrs makelinks tags vers.c \
+	    linterrs tags vers.c \
 	    vnode_if.c vnode_if.h vnode_if_newproto.h vnode_if_typedef.h \
 	    ${MFILES:T:S/.m$/.c/} ${MFILES:T:S/.m$/.h/} \
 	    ${CLEAN}
@@ -219,7 +219,7 @@ _ILINKS+= x86
 # Ensure that the link exists without depending on it when it exists.
 .for _link in ${_ILINKS}
 .if !exists(${.OBJDIR}/${_link})
-${SRCS}: ${_link}
+${SRCS} ${CLEAN:M*.o}: ${_link}
 .endif
 .endfor
 
@@ -236,14 +236,6 @@ ${_ILINKS}:
 # .depend needs include links so we remove them only together.
 kernel-cleandepend:
 	rm -f .depend ${_ILINKS}
-
-links:
-	egrep '#if' ${CFILES} | sed -f $S/conf/defines | \
-	    sed -e 's/:.*//' -e 's/\.c/.o/' | sort -u > dontlink
-	${MAKE} -V CFILES | tr -s ' ' '\12' | sed 's/\.c/.o/' | \
-	    sort -u | comm -23 - dontlink | \
-	    sed 's,../.*/\(.*.o\),rm -f \1;ln -s ../GENERIC/\1 \1,' > makelinks
-	sh makelinks; rm -f dontlink
 
 kernel-tags:
 	@[ -f .depend ] || { echo "you must make depend first"; exit 1; }

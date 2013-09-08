@@ -1690,7 +1690,7 @@ jme_encap(struct jme_softc *sc, struct mbuf **m_head)
 	struct mbuf *m;
 	bus_dma_segment_t txsegs[JME_MAXTXSEGS];
 	int error, i, nsegs, prod;
-	uint32_t cflags, tso_segsz;
+	uint32_t cflags, tsosegsz;
 
 	JME_LOCK_ASSERT(sc);
 
@@ -1712,7 +1712,7 @@ jme_encap(struct jme_softc *sc, struct mbuf **m_head)
 
 		if (M_WRITABLE(*m_head) == 0) {
 			/* Get a writable copy. */
-			m = m_dup(*m_head, M_DONTWAIT);
+			m = m_dup(*m_head, M_NOWAIT);
 			m_freem(*m_head);
 			if (m == NULL) {
 				*m_head = NULL;
@@ -1774,7 +1774,7 @@ jme_encap(struct jme_softc *sc, struct mbuf **m_head)
 	error = bus_dmamap_load_mbuf_sg(sc->jme_cdata.jme_tx_tag,
 	    txd->tx_dmamap, *m_head, txsegs, &nsegs, 0);
 	if (error == EFBIG) {
-		m = m_collapse(*m_head, M_DONTWAIT, JME_MAXTXSEGS);
+		m = m_collapse(*m_head, M_NOWAIT, JME_MAXTXSEGS);
 		if (m == NULL) {
 			m_freem(*m_head);
 			*m_head = NULL;
@@ -1808,10 +1808,10 @@ jme_encap(struct jme_softc *sc, struct mbuf **m_head)
 
 	m = *m_head;
 	cflags = 0;
-	tso_segsz = 0;
+	tsosegsz = 0;
 	/* Configure checksum offload and TSO. */
 	if ((m->m_pkthdr.csum_flags & CSUM_TSO) != 0) {
-		tso_segsz = (uint32_t)m->m_pkthdr.tso_segsz <<
+		tsosegsz = (uint32_t)m->m_pkthdr.tso_segsz <<
 		    JME_TD_MSS_SHIFT;
 		cflags |= JME_TD_TSO;
 	} else {
@@ -1830,7 +1830,7 @@ jme_encap(struct jme_softc *sc, struct mbuf **m_head)
 
 	desc = &sc->jme_rdata.jme_tx_ring[prod];
 	desc->flags = htole32(cflags);
-	desc->buflen = htole32(tso_segsz);
+	desc->buflen = htole32(tsosegsz);
 	desc->addr_hi = htole32(m->m_pkthdr.len);
 	desc->addr_lo = 0;
 	sc->jme_cdata.jme_tx_cnt++;
@@ -3181,7 +3181,7 @@ jme_newbuf(struct jme_softc *sc, struct jme_rxdesc *rxd)
 	bus_dmamap_t map;
 	int nsegs;
 
-	m = m_getcl(M_DONTWAIT, MT_DATA, M_PKTHDR);
+	m = m_getcl(M_NOWAIT, MT_DATA, M_PKTHDR);
 	if (m == NULL)
 		return (ENOBUFS);
 	/*

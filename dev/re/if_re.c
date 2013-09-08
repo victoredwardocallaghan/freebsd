@@ -171,7 +171,7 @@ TUNABLE_INT("hw.re.prefer_iomap", &prefer_iomap);
 /*
  * Various supported device vendors/types and their names.
  */
-static const struct rl_type const re_devs[] = {
+static const struct rl_type re_devs[] = {
 	{ DLINK_VENDORID, DLINK_DEVICEID_528T, 0,
 	    "D-Link DGE-528(T) Gigabit Ethernet Adapter" },
 	{ DLINK_VENDORID, DLINK_DEVICEID_530T_REVC, 0,
@@ -194,7 +194,7 @@ static const struct rl_type const re_devs[] = {
 	    "US Robotics 997902 (RTL8169S) Gigabit Ethernet" }
 };
 
-static const struct rl_hwrev const re_hwrevs[] = {
+static const struct rl_hwrev re_hwrevs[] = {
 	{ RL_HWREV_8139, RL_8139, "", RL_MTU },
 	{ RL_HWREV_8139A, RL_8139, "A", RL_MTU },
 	{ RL_HWREV_8139AG, RL_8139, "A-G", RL_MTU },
@@ -758,7 +758,7 @@ re_diag(struct rl_softc *sc)
 	u_int8_t		src[] = { 0x00, 'w', 'o', 'r', 'l', 'd' };
 
 	/* Allocate a single mbuf */
-	MGETHDR(m0, M_DONTWAIT, MT_DATA);
+	MGETHDR(m0, M_NOWAIT, MT_DATA);
 	if (m0 == NULL)
 		return (ENOBUFS);
 
@@ -1321,7 +1321,7 @@ re_attach(device_t dev)
 			    SYS_RES_IRQ, &rid, RF_ACTIVE);
 			if (sc->rl_irq[i] == NULL) {
 				device_printf(dev,
-				    "couldn't llocate IRQ resources for "
+				    "couldn't allocate IRQ resources for "
 				    "message %d\n", rid);
 				error = ENXIO;
 				goto fail;
@@ -1587,7 +1587,8 @@ re_attach(device_t dev)
 	 * packet has IP options so disable TX IP checksum offloading.
 	 */
 	if (sc->rl_hwrev->rl_rev == RL_HWREV_8168C ||
-	    sc->rl_hwrev->rl_rev == RL_HWREV_8168C_SPIN2)
+	    sc->rl_hwrev->rl_rev == RL_HWREV_8168C_SPIN2 ||
+	    sc->rl_hwrev->rl_rev == RL_HWREV_8168CP)
 		ifp->if_hwassist = CSUM_TCP | CSUM_UDP;
 	else
 		ifp->if_hwassist = CSUM_IP | CSUM_TCP | CSUM_UDP;
@@ -1631,7 +1632,7 @@ re_attach(device_t dev)
 	/*
 	 * Don't enable TSO by default.  It is known to generate
 	 * corrupted TCP segments(bad TCP options) under certain
-	 * circumtances.
+	 * circumstances.
 	 */
 	ifp->if_hwassist &= ~CSUM_TSO;
 	ifp->if_capenable &= ~(IFCAP_TSO4 | IFCAP_VLAN_HWTSO);
@@ -1886,7 +1887,7 @@ re_newbuf(struct rl_softc *sc, int idx)
 	uint32_t		cmdstat;
 	int			error, nsegs;
 
-	m = m_getcl(M_DONTWAIT, MT_DATA, M_PKTHDR);
+	m = m_getcl(M_NOWAIT, MT_DATA, M_PKTHDR);
 	if (m == NULL)
 		return (ENOBUFS);
 
@@ -1950,7 +1951,7 @@ re_jumbo_newbuf(struct rl_softc *sc, int idx)
 	uint32_t		cmdstat;
 	int			error, nsegs;
 
-	m = m_getjcl(M_DONTWAIT, MT_DATA, M_PKTHDR, MJUM9BYTES);
+	m = m_getjcl(M_NOWAIT, MT_DATA, M_PKTHDR, MJUM9BYTES);
 	if (m == NULL)
 		return (ENOBUFS);
 	m->m_len = m->m_pkthdr.len = MJUM9BYTES;
@@ -2111,11 +2112,9 @@ re_rxeof(struct rl_softc *sc, int *rx_npktsp)
 
 	ifp = sc->rl_ifp;
 #ifdef DEV_NETMAP
-	if (ifp->if_capenable & IFCAP_NETMAP) {
-		NA(ifp)->rx_rings[0].nr_kflags |= NKR_PENDINTR;
-		selwakeuppri(&NA(ifp)->rx_rings[0].si, PI_NET);
+	if (netmap_rx_irq(ifp, 0 | (NETMAP_LOCKED_ENTER|NETMAP_LOCKED_EXIT),
+	    &rx_npkts))
 		return 0;
-	}
 #endif /* DEV_NETMAP */
 	if (ifp->if_mtu > RL_MTU && (sc->rl_flags & RL_FLAG_JUMBOV2) != 0)
 		jumbo = 1;
@@ -2359,10 +2358,8 @@ re_txeof(struct rl_softc *sc)
 
 	ifp = sc->rl_ifp;
 #ifdef DEV_NETMAP
-	if (ifp->if_capenable & IFCAP_NETMAP) {
-		selwakeuppri(&NA(ifp)->tx_rings[0].si, PI_NET);
+	if (netmap_tx_irq(ifp, 0 | (NETMAP_LOCKED_ENTER|NETMAP_LOCKED_EXIT)))
 		return;
-	}
 #endif /* DEV_NETMAP */
 	/* Invalidate the TX descriptor list */
 	bus_dmamap_sync(sc->rl_ldata.rl_tx_list_tag,
@@ -2700,7 +2697,7 @@ re_encap(struct rl_softc *sc, struct mbuf **m_head)
 		padlen = RL_MIN_FRAMELEN - (*m_head)->m_pkthdr.len;
 		if (M_WRITABLE(*m_head) == 0) {
 			/* Get a writable copy. */
-			m_new = m_dup(*m_head, M_DONTWAIT);
+			m_new = m_dup(*m_head, M_NOWAIT);
 			m_freem(*m_head);
 			if (m_new == NULL) {
 				*m_head = NULL;
@@ -2710,7 +2707,7 @@ re_encap(struct rl_softc *sc, struct mbuf **m_head)
 		}
 		if ((*m_head)->m_next != NULL ||
 		    M_TRAILINGSPACE(*m_head) < padlen) {
-			m_new = m_defrag(*m_head, M_DONTWAIT);
+			m_new = m_defrag(*m_head, M_NOWAIT);
 			if (m_new == NULL) {
 				m_freem(*m_head);
 				*m_head = NULL;
@@ -2734,7 +2731,7 @@ re_encap(struct rl_softc *sc, struct mbuf **m_head)
 	error = bus_dmamap_load_mbuf_sg(sc->rl_ldata.rl_tx_mtag, txd->tx_dmamap,
 	    *m_head, segs, &nsegs, BUS_DMA_NOWAIT);
 	if (error == EFBIG) {
-		m_new = m_collapse(*m_head, M_DONTWAIT, RL_NTXSEGS);
+		m_new = m_collapse(*m_head, M_NOWAIT, RL_NTXSEGS);
 		if (m_new == NULL) {
 			m_freem(*m_head);
 			*m_head = NULL;
@@ -2787,7 +2784,7 @@ re_encap(struct rl_softc *sc, struct mbuf **m_head)
 		/*
 		 * Unconditionally enable IP checksum if TCP or UDP
 		 * checksum is required. Otherwise, TCP/UDP checksum
-		 * does't make effects.
+		 * doesn't make effects.
 		 */
 		if (((*m_head)->m_pkthdr.csum_flags & RE_CSUM_FEATURES) != 0) {
 			if ((sc->rl_flags & RL_FLAG_DESCV2) == 0) {
@@ -3250,7 +3247,7 @@ re_init_locked(struct rl_softc *sc)
 		if ((sc->rl_flags & RL_FLAG_JUMBOV2) != 0) {
 			/*
 			 * For controllers that use new jumbo frame scheme,
-			 * set maximum size of jumbo frame depedning on
+			 * set maximum size of jumbo frame depending on
 			 * controller revisions.
 			 */
 			if (ifp->if_mtu > RL_MTU)
@@ -3419,7 +3416,8 @@ re_ioctl(struct ifnet *ifp, u_long command, caddr_t data)
 			if ((ifp->if_capenable & IFCAP_TXCSUM) != 0) {
 				rev = sc->rl_hwrev->rl_rev;
 				if (rev == RL_HWREV_8168C ||
-				    rev == RL_HWREV_8168C_SPIN2)
+				    rev == RL_HWREV_8168C_SPIN2 ||
+				    rev == RL_HWREV_8168CP)
 					ifp->if_hwassist |= CSUM_TCP | CSUM_UDP;
 				else
 					ifp->if_hwassist |= RE_CSUM_FEATURES;
@@ -3950,7 +3948,7 @@ re_sysctl_stats(SYSCTL_HANDLER_ARGS)
 		RL_UNLOCK(sc);
 		if (i == 0) {
 			device_printf(sc->rl_dev,
-			    "DUMP statistics request timedout\n");
+			    "DUMP statistics request timed out\n");
 			return (ETIMEDOUT);
 		}
 done:

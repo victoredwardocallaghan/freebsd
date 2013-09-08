@@ -1,6 +1,4 @@
-/*	$OpenBSD: pf_table.c,v 1.79 2008/10/08 06:24:50 mcbride Exp $	*/
-
-/*
+/*-
  * Copyright (c) 2002 Cedric Berger
  * All rights reserved.
  *
@@ -28,6 +26,7 @@
  * ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
  *
+ *	$OpenBSD: pf_table.c,v 1.79 2008/10/08 06:24:50 mcbride Exp $
  */
 
 #include <sys/cdefs.h>
@@ -742,6 +741,8 @@ pfr_lookup_addr(struct pfr_ktable *kt, struct pfr_addr *ad, int exact)
 	struct radix_node_head	*head = NULL;
 	struct pfr_kentry	*ke;
 
+	PF_RULES_ASSERT();
+
 	bzero(&sa, sizeof(sa));
 	if (ad->pfra_af == AF_INET) {
 		FILLIN_SIN(sa.sin, ad->pfra_ip4addr);
@@ -834,7 +835,7 @@ pfr_insert_kentry(struct pfr_ktable *kt, struct pfr_addr *ad, long tzero)
 		return (0);
 	p = pfr_create_kentry(ad);
 	if (p == NULL)
-		return (EINVAL);
+		return (ENOMEM);
 
 	rv = pfr_route_kentry(kt, p);
 	if (rv)
@@ -928,6 +929,8 @@ pfr_route_kentry(struct pfr_ktable *kt, struct pfr_kentry *ke)
 	union sockaddr_union	 mask;
 	struct radix_node	*rn;
 	struct radix_node_head	*head = NULL;
+
+	PF_RULES_WASSERT();
 
 	bzero(ke->pfrke_node, sizeof(ke->pfrke_node));
 	if (ke->pfrke_af == AF_INET)
@@ -1954,6 +1957,7 @@ pfr_update_stats(struct pfr_ktable *kt, struct pf_addr *a, sa_family_t af,
 	    {
 		struct sockaddr_in sin;
 
+		bzero(&sin, sizeof(sin));
 		sin.sin_len = sizeof(sin);
 		sin.sin_family = AF_INET;
 		sin.sin_addr.s_addr = a->addr32[0];
@@ -1968,6 +1972,7 @@ pfr_update_stats(struct pfr_ktable *kt, struct pf_addr *a, sa_family_t af,
 	    {
 		struct sockaddr_in6 sin6;
 
+		bzero(&sin6, sizeof(sin6));
 		sin6.sin6_len = sizeof(sin6);
 		sin6.sin6_family = AF_INET6;
 		bcopy(a, &sin6.sin6_addr, sizeof(sin6.sin6_addr));
@@ -1978,7 +1983,7 @@ pfr_update_stats(struct pfr_ktable *kt, struct pf_addr *a, sa_family_t af,
 	    }
 #endif /* INET6 */
 	default:
-		;
+		panic("%s: unknown address family %u", __func__, af);
 	}
 	if ((ke == NULL || ke->pfrke_not) != notrule) {
 		if (op_pass != PFR_OP_PASS)

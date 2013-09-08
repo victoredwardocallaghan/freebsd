@@ -331,6 +331,7 @@
 #define	BGE_CHIPID_BCM5717_B0		0x05717100
 #define	BGE_CHIPID_BCM5719_A0		0x05719000
 #define	BGE_CHIPID_BCM5720_A0		0x05720000
+#define	BGE_CHIPID_BCM5762_A0		0x05762000
 #define	BGE_CHIPID_BCM57765_A0		0x57785000
 #define	BGE_CHIPID_BCM57765_B0		0x57785100
 
@@ -357,9 +358,11 @@
 #define	BGE_ASICREV_BCM5719		0x5719
 #define	BGE_ASICREV_BCM5720		0x5720
 #define	BGE_ASICREV_BCM5761		0x5761
+#define	BGE_ASICREV_BCM5762		0x5762
 #define	BGE_ASICREV_BCM5784		0x5784
 #define	BGE_ASICREV_BCM5785		0x5785
 #define	BGE_ASICREV_BCM57765		0x57785
+#define	BGE_ASICREV_BCM57766		0x57766
 #define	BGE_ASICREV_BCM57780		0x57780
 
 /* chip revisions */
@@ -377,6 +380,7 @@
 #define	BGE_CHIPREV_5717_AX		0x57170
 #define	BGE_CHIPREV_5717_BX		0x57171
 #define	BGE_CHIPREV_5761_AX		0x57611
+#define	BGE_CHIPREV_57765_AX		0x577850
 #define	BGE_CHIPREV_5784_AX		0x57841
 
 /* PCI DMA Read/Write Control register */
@@ -430,10 +434,14 @@
 #define	BGE_PCISTATE_PCI_BUSMODE	0x00000004 /* 1 = PCI, 0 = PCI-X */
 #define	BGE_PCISTATE_PCI_BUSSPEED	0x00000008 /* 1 = 66/133, 0 = 33/66 */
 #define	BGE_PCISTATE_32BIT_BUS		0x00000010 /* 1 = 32bit, 0 = 64bit */
-#define	BGE_PCISTATE_WANT_EXPROM	0x00000020
-#define	BGE_PCISTATE_EXPROM_RETRY	0x00000040
+#define	BGE_PCISTATE_ROM_ENABLE		0x00000020
+#define	BGE_PCISTATE_ROM_RETRY_ENABLE	0x00000040
 #define	BGE_PCISTATE_FLATVIEW_MODE	0x00000100
 #define	BGE_PCISTATE_PCI_TGT_RETRY_MAX	0x00000E00
+#define	BGE_PCISTATE_RETRY_SAME_DMA	0x00002000
+#define	BGE_PCISTATE_ALLOW_APE_CTLSPC_WR	0x00010000
+#define	BGE_PCISTATE_ALLOW_APE_SHMEM_WR	0x00020000
+#define	BGE_PCISTATE_ALLOW_APE_PSPACE_WR	0x00040000
 
 /*
  * PCI Clock Control register -- note, this register is read only
@@ -458,6 +466,8 @@
 #ifndef PCIM_CMD_INTxDIS
 #define	PCIM_CMD_INTxDIS		0x0400
 #endif
+
+/* BAR0 (MAC) Register Definitions */
 
 /*
  * High priority mailbox registers
@@ -741,6 +751,8 @@
 #define	BGE_MACMODE_TXDMA_ENB		0x00200000
 #define	BGE_MACMODE_RXDMA_ENB		0x00400000
 #define	BGE_MACMODE_FRMHDR_DMA_ENB	0x00800000
+#define	BGE_MACMODE_APE_RX_EN		0x08000000
+#define	BGE_MACMODE_APE_TX_EN		0x10000000
 
 #define	BGE_PORTMODE_NONE		0x00000000
 #define	BGE_PORTMODE_MII		0x00000004
@@ -788,7 +800,7 @@
 #define	BGE_LEDCTL_BLINKPERIOD_OVERRIDE	0x80000000
 
 /* TX backoff seed register */
-#define	BGE_TX_BACKOFF_SEED_MASK	0x3F
+#define	BGE_TX_BACKOFF_SEED_MASK	0x3FF
 
 /* Autopoll status register */
 #define	BGE_AUTOPOLLSTS_ERROR		0x00000001
@@ -828,6 +840,8 @@
 #define	BGE_RXMODE_RX_PROMISC		0x00000100
 #define	BGE_RXMODE_RX_NO_CRC_CHECK	0x00000200
 #define	BGE_RXMODE_RX_KEEP_VLAN_DIAG	0x00000400
+#define	BGE_RXMODE_IPV6_ENABLE		0x01000000
+#define	BGE_RXMODE_IPV4_FRAG_FIX	0x02000000
 
 /* Receive MAC status register */
 #define	BGE_RXSTAT_REMOTE_XOFFED	0x00000001
@@ -1279,6 +1293,7 @@
 #define	BGE_CPMU_MUTEX_REQ		0x365C
 #define	BGE_CPMU_MUTEX_GNT		0x3660
 #define	BGE_CPMU_PHY_STRAP		0x3664
+#define	BGE_CPMU_PADRNG_CTL		0x3668
 
 /* Central Power Management Unit (CPMU) register */
 #define	BGE_CPMU_CTRL_LINK_IDLE_MODE	0x00000200
@@ -1317,6 +1332,9 @@
 
 /* CPMU GPHY Strap register */
 #define	BGE_CPMU_PHY_STRAP_IS_SERDES	0x00000020
+
+/* CPMU Padring Control register */
+#define	BGE_CPMU_PADRNG_CTL_RDIV2	0x00040000
 
 /*
  * Mbuf Cluster Free registers (has nothing to do with BSD mbufs)
@@ -1529,6 +1547,8 @@
  */
 #define	BGE_RDMA_MODE			0x4800
 #define	BGE_RDMA_STATUS			0x4804
+#define	BGE_RDMA_RSRVCTRL_REG2		0x4890
+#define	BGE_RDMA_LSO_CRPTEN_CTRL_REG2	0x48A0
 #define	BGE_RDMA_RSRVCTRL		0x4900
 #define	BGE_RDMA_LSO_CRPTEN_CTRL	0x4910
 
@@ -1576,6 +1596,27 @@
 #define	BGE_RDMA_LSO_CRPTEN_CTRL_BLEN_BD_512	0x00020000
 #define	BGE_RDMA_LSO_CRPTEN_CTRL_BLEN_BD_4K	0x00030000
 #define	BGE_RDMA_LSO_CRPTEN_CTRL_BLEN_LSO_4K	0x000C0000
+#define	BGE_RDMA_TX_LENGTH_WA_5719		0x02000000
+#define	BGE_RDMA_TX_LENGTH_WA_5720		0x00200000
+
+/* BD Read DMA Mode register */
+#define	BGE_RDMA_BD_MODE		0x4A00
+/* BD Read DMA Mode status register */
+#define	BGE_RDMA_BD_STATUS		0x4A04
+
+#define	BGE_RDMA_BD_MODE_RESET		0x00000001
+#define	BGE_RDMA_BD_MODE_ENABLE		0x00000002
+
+/* Non-LSO Read DMA Mode register */
+#define	BGE_RDMA_NON_LSO_MODE		0x4B00
+/* Non-LSO Read DMA Mode status register */
+#define	BGE_RDMA_NON_LSO_STATUS		0x4B04
+
+#define	BGE_RDMA_NON_LSO_MODE_RESET	0x00000001
+#define	BGE_RDMA_NON_LSO_MODE_ENABLE	0x00000002
+
+#define	BGE_RDMA_LENGTH			0x4BE0
+#define	BGE_NUM_RDMA_CHANNELS		4
 
 /*
  * Write DMA control registers
@@ -2064,6 +2105,112 @@
 #define	BGE_MEMWIN_START		0x00008000
 #define	BGE_MEMWIN_END			0x0000FFFF
 
+/* BAR1 (APE) Register Definitions */
+
+#define	BGE_APE_GPIO_MSG		0x0008
+#define	BGE_APE_EVENT			0x000C
+#define	BGE_APE_LOCK_REQ		0x002C
+#define	BGE_APE_LOCK_GRANT		0x004C
+
+#define	BGE_APE_GPIO_MSG_SHIFT		4
+
+#define	BGE_APE_EVENT_1			0x00000001
+
+#define	BGE_APE_LOCK_REQ_DRIVER0	0x00001000
+
+#define	BGE_APE_LOCK_GRANT_DRIVER0	0x00001000
+
+/* APE Shared Memory block (writable by APE only) */
+#define	BGE_APE_SEG_SIG			0x4000
+#define	BGE_APE_FW_STATUS		0x400C
+#define	BGE_APE_FW_FEATURES		0x4010
+#define	BGE_APE_FW_BEHAVIOR		0x4014
+#define	BGE_APE_FW_VERSION		0x4018
+#define	BGE_APE_FW_HEARTBEAT_INTERVAL	0x4024
+#define	BGE_APE_FW_HEARTBEAT		0x4028
+#define	BGE_APE_FW_ERROR_FLAGS		0x4074
+
+#define	BGE_APE_SEG_SIG_MAGIC		0x41504521
+
+#define	BGE_APE_FW_STATUS_READY		0x00000100
+
+#define	BGE_APE_FW_FEATURE_DASH		0x00000001
+#define	BGE_APE_FW_FEATURE_NCSI		0x00000002
+
+#define	BGE_APE_FW_VERSION_MAJMSK	0xFF000000
+#define	BGE_APE_FW_VERSION_MAJSFT	24
+#define	BGE_APE_FW_VERSION_MINMSK	0x00FF0000
+#define	BGE_APE_FW_VERSION_MINSFT	16
+#define	BGE_APE_FW_VERSION_REVMSK	0x0000FF00
+#define	BGE_APE_FW_VERSION_REVSFT	8
+#define	BGE_APE_FW_VERSION_BLDMSK	0x000000FF
+
+/* Host Shared Memory block (writable by host only) */
+#define	BGE_APE_HOST_SEG_SIG		0x4200
+#define	BGE_APE_HOST_SEG_LEN		0x4204
+#define	BGE_APE_HOST_INIT_COUNT		0x4208
+#define	BGE_APE_HOST_DRIVER_ID		0x420C
+#define	BGE_APE_HOST_BEHAVIOR		0x4210
+#define	BGE_APE_HOST_HEARTBEAT_INT_MS	0x4214
+#define	BGE_APE_HOST_HEARTBEAT_COUNT	0x4218
+#define	BGE_APE_HOST_DRVR_STATE		0x421C
+#define	BGE_APE_HOST_WOL_SPEED		0x4224
+
+#define	BGE_APE_HOST_SEG_SIG_MAGIC	0x484F5354
+
+#define	BGE_APE_HOST_SEG_LEN_MAGIC	0x00000020
+
+#define	BGE_APE_HOST_DRIVER_ID_FBSD	0xF6000000
+#define	BGE_APE_HOST_DRIVER_ID_MAGIC(maj, min)				\
+	(BGE_APE_HOST_DRIVER_ID_FBSD |					\
+	((maj) & 0xffd) << 16 | ((min) & 0xff) << 8)
+
+#define	BGE_APE_HOST_BEHAV_NO_PHYLOCK	0x00000001
+
+#define	BGE_APE_HOST_HEARTBEAT_INT_DISABLE	0
+#define	BGE_APE_HOST_HEARTBEAT_INT_5SEC	5000
+
+#define	BGE_APE_HOST_DRVR_STATE_START	0x00000001
+#define	BGE_APE_HOST_DRVR_STATE_UNLOAD	0x00000002
+#define	BGE_APE_HOST_DRVR_STATE_WOL	0x00000003
+#define	BGE_APE_HOST_DRVR_STATE_SUSPEND	0x00000004
+
+#define	BGE_APE_HOST_WOL_SPEED_AUTO	0x00008000
+
+#define	BGE_APE_EVENT_STATUS		0x4300
+
+#define	BGE_APE_EVENT_STATUS_DRIVER_EVNT	0x00000010
+#define	BGE_APE_EVENT_STATUS_STATE_CHNGE	0x00000500
+#define	BGE_APE_EVENT_STATUS_STATE_START	0x00010000
+#define	BGE_APE_EVENT_STATUS_STATE_UNLOAD	0x00020000
+#define	BGE_APE_EVENT_STATUS_STATE_WOL		0x00030000
+#define	BGE_APE_EVENT_STATUS_STATE_SUSPEND	0x00040000
+#define	BGE_APE_EVENT_STATUS_EVENT_PENDING	0x80000000
+
+#define	BGE_APE_DEBUG_LOG		0x4E00
+#define	BGE_APE_DEBUG_LOG_LEN		0x0100
+
+#define	BGE_APE_PER_LOCK_REQ		0x8400
+#define	BGE_APE_PER_LOCK_GRANT		0x8420
+
+#define	BGE_APE_LOCK_PER_REQ_DRIVER0	0x00001000
+#define	BGE_APE_LOCK_PER_REQ_DRIVER1	0x00000002
+#define	BGE_APE_LOCK_PER_REQ_DRIVER2	0x00000004
+#define	BGE_APE_LOCK_PER_REQ_DRIVER3	0x00000008
+
+#define	BGE_APE_PER_LOCK_GRANT_DRIVER0	0x00001000
+#define	BGE_APE_PER_LOCK_GRANT_DRIVER1	0x00000002
+#define	BGE_APE_PER_LOCK_GRANT_DRIVER2	0x00000004
+#define	BGE_APE_PER_LOCK_GRANT_DRIVER3	0x00000008
+
+/* APE Mutex Resources */
+#define	BGE_APE_LOCK_PHY0		0
+#define	BGE_APE_LOCK_GRC		1
+#define	BGE_APE_LOCK_PHY1		2
+#define	BGE_APE_LOCK_PHY2		3
+#define	BGE_APE_LOCK_MEM		4
+#define	BGE_APE_LOCK_PHY3		5
+#define	BGE_APE_LOCK_GPIO		7
 
 #define	BGE_MEMWIN_READ(sc, x, val)					\
 	do {								\
@@ -2312,6 +2459,8 @@ struct bge_status_block {
 #define	BCOM_DEVICEID_BCM5721		0x1659
 #define	BCOM_DEVICEID_BCM5722		0x165A
 #define	BCOM_DEVICEID_BCM5723		0x165B
+#define	BCOM_DEVICEID_BCM5725		0x1643
+#define	BCOM_DEVICEID_BCM5727		0x16F3
 #define	BCOM_DEVICEID_BCM5750		0x1676
 #define	BCOM_DEVICEID_BCM5750M		0x167C
 #define	BCOM_DEVICEID_BCM5751		0x1677
@@ -2331,6 +2480,7 @@ struct bge_status_block {
 #define	BCOM_DEVICEID_BCM5761E		0x1680
 #define	BCOM_DEVICEID_BCM5761S		0x1688
 #define	BCOM_DEVICEID_BCM5761SE		0x1689
+#define	BCOM_DEVICEID_BCM5762		0x1687
 #define	BCOM_DEVICEID_BCM5764		0x1684
 #define	BCOM_DEVICEID_BCM5780		0x166A
 #define	BCOM_DEVICEID_BCM5780S		0x166B
@@ -2352,7 +2502,9 @@ struct bge_status_block {
 #define	BCOM_DEVICEID_BCM5906M		0x1713
 #define	BCOM_DEVICEID_BCM57760		0x1690
 #define	BCOM_DEVICEID_BCM57761		0x16B0
+#define	BCOM_DEVICEID_BCM57762		0x1682
 #define	BCOM_DEVICEID_BCM57765		0x16B4
+#define	BCOM_DEVICEID_BCM57766		0x1686
 #define	BCOM_DEVICEID_BCM57780		0x1692
 #define	BCOM_DEVICEID_BCM57781		0x16B1
 #define	BCOM_DEVICEID_BCM57785		0x16B5
@@ -2658,7 +2810,7 @@ struct bge_gib {
 #define	BGE_INC(x, y)	(x) = (x + 1) % y
 
 /*
- * Register access macros. The Tigon always uses memory mapped register
+ * BAR0 MAC register access macros. The Tigon always uses memory mapped register
  * accesses and all registers must be accessed with 32 bit operations.
  */
 
@@ -2672,6 +2824,18 @@ struct bge_gib {
 	CSR_WRITE_4(sc, reg, (CSR_READ_4(sc, reg) | (x)))
 #define	BGE_CLRBIT(sc, reg, x)	\
 	CSR_WRITE_4(sc, reg, (CSR_READ_4(sc, reg) & ~(x)))
+
+/* BAR2 APE register access macros. */
+#define	APE_WRITE_4(sc, reg, val)	\
+	bus_write_4(sc->bge_res2, reg, val)
+
+#define	APE_READ_4(sc, reg)		\
+	bus_read_4(sc->bge_res2, reg)
+
+#define	APE_SETBIT(sc, reg, x)	\
+	APE_WRITE_4(sc, reg, (APE_READ_4(sc, reg) | (x)))
+#define	APE_CLRBIT(sc, reg, x)	\
+	APE_WRITE_4(sc, reg, (APE_READ_4(sc, reg) & ~(x)))
 
 #define	PCI_SETBIT(dev, reg, x, s)	\
 	pci_write_config(dev, reg, (pci_read_config(dev, reg, s) | (x)), s)
@@ -2772,6 +2936,7 @@ struct bge_dmamap_arg {
 #define	BGE_HWREV_TIGON_II	0x02
 #define	BGE_TIMEOUT		100000
 #define	BGE_TXCONS_UNSET		0xFFFF	/* impossible value */
+#define	BGE_TX_TIMEOUT		5
 
 struct bge_bcom_hack {
 	int			reg;
@@ -2789,9 +2954,11 @@ struct bge_softc {
 	device_t		bge_miibus;
 	void			*bge_intrhand;
 	struct resource		*bge_irq;
-	struct resource		*bge_res;
+	struct resource		*bge_res;	/* MAC mapped I/O */
+	struct resource		*bge_res2;	/* APE mapped I/O */
 	struct ifmedia		bge_ifmedia;	/* TBI media info */
 	int			bge_expcap;
+	int			bge_expmrq;
 	int			bge_msicap;
 	int			bge_pcixcap;
 	uint32_t		bge_flags;
@@ -2802,6 +2969,7 @@ struct bge_softc {
 #define	BGE_FLAG_MII_SERDES	0x00000010
 #define	BGE_FLAG_CPMU_PRESENT	0x00000020
 #define	BGE_FLAG_TAGGED_STATUS	0x00000040
+#define	BGE_FLAG_APE		0x00000080
 #define	BGE_FLAG_MSI		0x00000100
 #define	BGE_FLAG_PCIX		0x00000200
 #define	BGE_FLAG_PCIE		0x00000400
@@ -2815,12 +2983,22 @@ struct bge_softc {
 #define	BGE_FLAG_5755_PLUS	0x00100000
 #define	BGE_FLAG_5788		0x00200000
 #define	BGE_FLAG_5717_PLUS	0x00400000
+#define	BGE_FLAG_57765_PLUS	0x00800000
 #define	BGE_FLAG_40BIT_BUG	0x01000000
 #define	BGE_FLAG_4G_BNDRY_BUG	0x02000000
 #define	BGE_FLAG_RX_ALIGNBUG	0x04000000
 #define	BGE_FLAG_SHORT_DMA_BUG	0x08000000
 #define	BGE_FLAG_4K_RDMA_BUG	0x10000000
 #define	BGE_FLAG_MBOX_REORDER	0x20000000
+#define	BGE_FLAG_RDMA_BUG	0x40000000
+	uint32_t		bge_mfw_flags;	/* Management F/W flags */
+#define	BGE_MFW_ON_RXCPU	0x00000001
+#define	BGE_MFW_ON_APE		0x00000002
+#define	BGE_MFW_TYPE_NCSI	0x00000004
+#define	BGE_MFW_TYPE_DASH	0x00000008
+	int			bge_phy_ape_lock;
+	int			bge_func_addr;
+	int			bge_phy_addr;
 	uint32_t		bge_phy_flags;
 #define	BGE_PHY_NO_WIRESPEED	0x00000001
 #define	BGE_PHY_ADC_BUG		0x00000002
@@ -2835,6 +3013,7 @@ struct bge_softc {
 	uint32_t		bge_chiprev;
 	uint8_t			bge_asf_mode;
 	uint8_t			bge_asf_count;
+	uint16_t		bge_mps;
 	struct bge_ring_data	bge_ldata;	/* rings */
 	struct bge_chain_data	bge_cdata;	/* mbufs */
 	uint16_t		bge_tx_saved_considx;

@@ -183,7 +183,7 @@ static int
 tws_attach(device_t dev)
 {
     struct tws_softc *sc = device_get_softc(dev);
-    u_int32_t cmd, bar;
+    u_int32_t bar;
     int error=0,i;
 
     /* no tracing yet */
@@ -197,7 +197,7 @@ tws_attach(device_t dev)
     mtx_init( &sc->q_lock, "tws_q_lock", NULL, MTX_DEF);
     mtx_init( &sc->sim_lock,  "tws_sim_lock", NULL, MTX_DEF);
     mtx_init( &sc->gen_lock,  "tws_gen_lock", NULL, MTX_DEF);
-    mtx_init( &sc->io_lock,  "tws_io_lock", NULL, MTX_DEF);
+    mtx_init( &sc->io_lock,  "tws_io_lock", NULL, MTX_DEF | MTX_RECURSE);
 
     if ( tws_init_trace_q(sc) == FAILURE )
         printf("trace init failure\n");
@@ -224,14 +224,7 @@ tws_attach(device_t dev)
                       OID_AUTO, "driver_version", CTLFLAG_RD,
                       TWS_DRIVER_VERSION_STRING, 0, "TWS driver version");
 
-    cmd = pci_read_config(dev, PCIR_COMMAND, 2);
-    if ( (cmd & PCIM_CMD_PORTEN) == 0) {
-        tws_log(sc, PCI_COMMAND_READ);
-        goto attach_fail_1;
-    }
-    /* Force the busmaster enable bit on. */
-    cmd |= PCIM_CMD_BUSMASTEREN;
-    pci_write_config(dev, PCIR_COMMAND, cmd, 2);
+    pci_enable_busmaster(dev);
 
     bar = pci_read_config(dev, TWS_PCI_BAR0, 4);
     TWS_TRACE_DEBUG(sc, "bar0 ", bar, 0);
@@ -405,6 +398,8 @@ tws_detach(device_t dev)
     free(sc->reqs, M_TWS);
     free(sc->sense_bufs, M_TWS);
     free(sc->scan_ccb, M_TWS);
+    if (sc->ioctl_data_mem)
+            bus_dmamem_free(sc->data_tag, sc->ioctl_data_mem, sc->ioctl_data_map);
     free(sc->aen_q.q, M_TWS);
     free(sc->trace_q.q, M_TWS);
     mtx_destroy(&sc->q_lock);
@@ -459,13 +454,9 @@ static int
 tws_setup_irq(struct tws_softc *sc)
 {
     int messages;
-    u_int16_t cmd;
 
-    cmd = pci_read_config(sc->tws_dev, PCIR_COMMAND, 2);
     switch(sc->intr_type) {
         case TWS_INTx :
-            cmd = cmd & ~0x0400;
-            pci_write_config(sc->tws_dev, PCIR_COMMAND, cmd, 2);
             sc->irqs = 1;
             sc->irq_res_id[0] = 0;
             sc->irq_res[0] = bus_alloc_resource_any(sc->tws_dev, SYS_RES_IRQ,
@@ -477,8 +468,6 @@ tws_setup_irq(struct tws_softc *sc)
             device_printf(sc->tws_dev, "Using legacy INTx\n");
             break;
         case TWS_MSI :
-            cmd = cmd | 0x0400;
-            pci_write_config(sc->tws_dev, PCIR_COMMAND, cmd, 2);
             sc->irqs = 1;
             sc->irq_res_id[0] = 1;
             messages = 1;
@@ -607,6 +596,11 @@ tws_init(struct tws_softc *sc)
     sc->scan_ccb = malloc(sizeof(union ccb), M_TWS, M_WAITOK | M_ZERO);
     if ( sc->scan_ccb == NULL ) {
         TWS_TRACE_DEBUG(sc, "ccb malloc failed", 0, sc->is64bit);
+        return(ENOMEM);
+    }
+    if (bus_dmamem_alloc(sc->data_tag, (void **)&sc->ioctl_data_mem,
+            (BUS_DMA_NOWAIT | BUS_DMA_ZERO), &sc->ioctl_data_map)) {
+        device_printf(sc->tws_dev, "Cannot allocate ioctl data mem\n");
         return(ENOMEM);
     }
 

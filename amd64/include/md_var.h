@@ -48,6 +48,7 @@ extern	u_int	amd_pminfo;
 extern	u_int	via_feature_rng;
 extern	u_int	via_feature_xcrypt;
 extern	u_int	cpu_clflush_line_size;
+extern	u_int	cpu_stdext_feature;
 extern	u_int	cpu_fxsr;
 extern	u_int	cpu_high;
 extern	u_int	cpu_id;
@@ -57,6 +58,9 @@ extern	u_int	cpu_procinfo;
 extern	u_int	cpu_procinfo2;
 extern	char	cpu_vendor[];
 extern	u_int	cpu_vendor_id;
+extern	u_int	cpu_mon_mwait_flags;
+extern	u_int	cpu_mon_min_size;
+extern	u_int	cpu_mon_max_size;
 extern	char	ctx_switch_xsave[];
 extern	char	kstack[];
 extern	char	sigcode[];
@@ -116,5 +120,6 @@ void	minidumpsys(struct dumperinfo *);
 struct savefpu *get_pcb_user_save_td(struct thread *td);
 struct savefpu *get_pcb_user_save_pcb(struct pcb *pcb);
 struct pcb *get_pcb_td(struct thread *td);
+void	amd64_db_resume_dbreg(void);
 
 #endif /* !_MACHINE_MD_VAR_H_ */

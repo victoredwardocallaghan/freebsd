@@ -802,7 +802,8 @@ nextdisk:
 			}
 		}
 		remain -= length;
-		addr += length;
+		if (bp->bio_cmd != BIO_DELETE)
+			addr += length;
 		start = 0;
 	}
 	for (cbp = bioq_first(&queue); cbp != NULL;
@@ -858,10 +859,8 @@ g_raid_tr_iostart_raid1e(struct g_raid_tr_object *tr, struct bio *bp)
 		g_raid_tr_iostart_raid1e_read(tr, bp);
 		break;
 	case BIO_WRITE:
-		g_raid_tr_iostart_raid1e_write(tr, bp);
-		break;
 	case BIO_DELETE:
-		g_raid_iodone(bp, EIO);
+		g_raid_tr_iostart_raid1e_write(tr, bp);
 		break;
 	case BIO_FLUSH:
 		g_raid_tr_flush_common(tr, bp);
@@ -1077,8 +1076,6 @@ rebuild_round_done:
 				offset += vol->v_strip_size;
 			}
 			cbp->bio_offset = offset + start;
-			cbp->bio_length = bp->bio_length;
-			cbp->bio_data = bp->bio_data;
 			cbp->bio_cmd = BIO_WRITE;
 			cbp->bio_cflags = G_RAID_BIO_FLAG_REMAP;
 			cbp->bio_caller2 = (void *)mask;
@@ -1122,7 +1119,7 @@ rebuild_round_done:
 	if (pbp->bio_cmd != BIO_READ) {
 		if (pbp->bio_inbed == 1 || pbp->bio_error != 0)
 			pbp->bio_error = bp->bio_error;
-		if (bp->bio_error != 0) {
+		if (pbp->bio_cmd == BIO_WRITE && bp->bio_error != 0) {
 			G_RAID_LOGREQ(0, bp, "Write failed: failing subdisk.");
 			g_raid_tr_raid1e_fail_disk(sd->sd_softc, sd, sd->sd_disk);
 		}

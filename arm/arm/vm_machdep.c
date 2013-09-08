@@ -73,6 +73,13 @@ __FBSDID("$FreeBSD$");
 
 #include <machine/md_var.h>
 
+/*
+ * struct switchframe and trapframe must both be a multiple of 8
+ * for correct stack alignment.
+ */
+CTASSERT(sizeof(struct switchframe) == 24);
+CTASSERT(sizeof(struct trapframe) == 80);
+
 #ifndef NSFBUFS
 #define NSFBUFS		(512 + maxusers * 16)
 #endif
@@ -131,8 +138,8 @@ cpu_fork(register struct thread *td1, register struct proc *p2,
 	pcb2->un_32.pcb32_sp = td2->td_kstack +
 	    USPACE_SVC_STACK_TOP - sizeof(*pcb2);
 	pmap_activate(td2);
-	td2->td_frame = tf =
-	    (struct trapframe *)pcb2->un_32.pcb32_sp - 1;
+	td2->td_frame = tf = (struct trapframe *)STACKALIGN(
+	    pcb2->un_32.pcb32_sp - sizeof(struct trapframe));
 	*tf = *td1->td_frame;
 	sf = (struct switchframe *)tf - 1;
 	sf->sf_r4 = (u_int)fork_return;
@@ -142,6 +149,8 @@ cpu_fork(register struct thread *td1, register struct proc *p2,
 	tf->tf_r0 = 0;
 	tf->tf_r1 = 0;
 	pcb2->un_32.pcb32_sp = (u_int)sf;
+	KASSERT((pcb2->un_32.pcb32_sp & 7) == 0,
+	    ("cpu_fork: Incorrect stack alignment"));
 
 	/* Setup to release spin count in fork_exit(). */
 	td2->td_md.md_spinlock_count = 1;
@@ -201,7 +210,7 @@ sf_buf_init(void *arg)
 		
 	sf_buf_active = hashinit(nsfbufs, M_TEMP, &sf_buf_hashmask);
 	TAILQ_INIT(&sf_buf_freelist);
-	sf_base = kmem_alloc_nofault(kernel_map, nsfbufs * PAGE_SIZE);
+	sf_base = kva_alloc(nsfbufs * PAGE_SIZE);
 	sf_bufs = malloc(nsfbufs * sizeof(struct sf_buf), M_TEMP,
 	    M_NOWAIT | M_ZERO);
 	for (i = 0; i < nsfbufs; i++) {
@@ -243,7 +252,7 @@ sf_buf_alloc(struct vm_page *m, int flags)
 		if (flags & SFB_NOWAIT)
 			goto done;
 		sf_buf_alloc_want++;
-		mbstat.sf_allocwait++;
+		SFSTAT_INC(sf_allocwait);
 		error = msleep(&sf_buf_freelist, &sf_buf_lock,
 		    (flags & SFB_CATCH) ? PCATCH | PVM : PVM, "sfbufa", 0);
 		sf_buf_alloc_want--;
@@ -345,6 +354,8 @@ cpu_set_upcall(struct thread *td, struct thread *td0)
 	tf->tf_r0 = 0;
 	td->td_pcb->un_32.pcb32_sp = (u_int)sf;
 	td->td_pcb->un_32.pcb32_und_sp = td->td_kstack + USPACE_UNDEF_STACK_TOP;
+	KASSERT((td->td_pcb->un_32.pcb32_sp & 7) == 0,
+	    ("cpu_set_upcall: Incorrect stack alignment"));
 
 	/* Setup to release spin count in fork_exit(). */
 	td->td_md.md_spinlock_count = 1;
@@ -362,8 +373,8 @@ cpu_set_upcall_kse(struct thread *td, void (*entry)(void *), void *arg,
 {
 	struct trapframe *tf = td->td_frame;
 
-	tf->tf_usr_sp = ((int)stack->ss_sp + stack->ss_size
-	    - sizeof(struct trapframe)) & ~7;
+	tf->tf_usr_sp = STACKALIGN((int)stack->ss_sp + stack->ss_size
+	    - sizeof(struct trapframe));
 	tf->tf_pc = (int)entry;
 	tf->tf_r0 = (int)arg;
 	tf->tf_spsr = PSR_USR32_MODE;
@@ -396,8 +407,14 @@ cpu_thread_alloc(struct thread *td)
 {
 	td->td_pcb = (struct pcb *)(td->td_kstack + td->td_kstack_pages *
 	    PAGE_SIZE) - 1;
-	td->td_frame = (struct trapframe *)
-	    ((u_int)td->td_kstack + USPACE_SVC_STACK_TOP - sizeof(struct pcb)) - 1;
+	/*
+	 * Ensure td_frame is aligned to an 8 byte boundary as it will be
+	 * placed into the stack pointer which must be 8 byte aligned in
+	 * the ARM EABI.
+	 */
+	td->td_frame = (struct trapframe *)STACKALIGN((u_int)td->td_kstack +
+	    USPACE_SVC_STACK_TOP - sizeof(struct pcb) -
+	    sizeof(struct trapframe));
 #ifdef __XSCALE__
 #ifndef CPU_XSCALE_CORE3
 	pmap_use_minicache(td->td_kstack, td->td_kstack_pages * PAGE_SIZE);
@@ -432,6 +449,8 @@ cpu_set_fork_handler(struct thread *td, void (*func)(void *), void *arg)
 	sf->sf_r4 = (u_int)func;
 	sf->sf_r5 = (u_int)arg;
 	td->td_pcb->un_32.pcb32_sp = (u_int)sf;
+	KASSERT((td->td_pcb->un_32.pcb32_sp & 7) == 0,
+	    ("cpu_set_fork_handler: Incorrect stack alignment"));
 }
 
 /*
@@ -648,15 +667,11 @@ uma_small_alloc(uma_zone_t zone, int bytes, u_int8_t *flags, int wait)
 		if (zone == l2zone &&
 		    pte_l1_s_cache_mode != pte_l1_s_cache_mode_pt) {
 			*flags = UMA_SLAB_KMEM;
-			ret = ((void *)kmem_malloc(kmem_map, bytes, M_NOWAIT));
+			ret = ((void *)kmem_malloc(kmem_arena, bytes,
+			    M_NOWAIT));
 			return (ret);
 		}
-		if ((wait & (M_NOWAIT|M_USE_RESERVE)) == M_NOWAIT)
-			pflags = VM_ALLOC_INTERRUPT | VM_ALLOC_WIRED;
-		else
-			pflags = VM_ALLOC_SYSTEM | VM_ALLOC_WIRED;
-		if (wait & M_ZERO)
-			pflags |= VM_ALLOC_ZERO;
+		pflags = malloc2vm_flags(wait) | VM_ALLOC_WIRED;
 		for (;;) {
 			m = vm_page_alloc(NULL, 0, pflags | VM_ALLOC_NOOBJ);
 			if (m == NULL) {
@@ -687,7 +702,7 @@ uma_small_free(void *mem, int size, u_int8_t flags)
 	pt_entry_t *pt;
 
 	if (flags & UMA_SLAB_KMEM)
-		kmem_free(kmem_map, (vm_offset_t)mem, size);
+		kmem_free(kmem_arena, (vm_offset_t)mem, size);
 	else {
 		struct arm_small_page *sp;
 
