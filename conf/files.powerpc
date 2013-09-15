@@ -229,6 +229,7 @@ powerpc/pseries/phyp-hvcall.S	optional	pseries powerpc64
 powerpc/pseries/mmu_phyp.c	optional	pseries powerpc64
 powerpc/pseries/phyp_console.c	optional	pseries powerpc64
 powerpc/pseries/platform_chrp.c	optional	pseries
+powerpc/pseries/plpar_iommu.c	optional	pseries powerpc64
 powerpc/pseries/rtas_dev.c	optional	pseries
 powerpc/pseries/rtas_pci.c	optional	pseries pci
 powerpc/pseries/vdevice.c	optional	pseries powerpc64
